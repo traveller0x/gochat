@@ -1,0 +1,18 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Go build outputs
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# IDE settings
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
