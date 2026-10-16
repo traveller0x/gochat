@@ -29,7 +29,9 @@ func NewMySQL(cfg config.MySQLConfig) (*gorm.DB, error) {
 		cfg.Database,
 	)
 
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
+		TranslateError: true,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("connect to MySQL: %w", err)
 	}
