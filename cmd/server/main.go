@@ -16,6 +16,7 @@ import (
 	"gochat/internal/router"
 	"gochat/internal/server"
 	"gochat/internal/service"
+	"gochat/internal/ws"
 )
 
 func main() {
@@ -72,14 +73,19 @@ func run() error {
 	// 6. 初始化 Service。
 	userService := service.NewUserService(userRepo)
 
-	// 7. 初始化路由，注入业务服务和 JWT 配置。
-	r := router.SetupRouter(
-		userService,
-		cfg.JWT.Secret,
-		cfg.JWT.ExpireHours,
-	)
+	// 7. 创建连接中心。
+	//    Hub 是整个进程唯一的在线连接注册表，生命周期与 HTTP 服务一致。
+	hub := ws.NewHub()
 
-	// 8. 构造 HTTP 服务。
+	// 8. 初始化路由，注入业务服务、连接中心和 JWT 配置。
+	r := router.SetupRouter(router.Deps{
+		UserService:    userService,
+		Hub:            hub,
+		JWTSecret:      cfg.JWT.Secret,
+		JWTExpireHours: cfg.JWT.ExpireHours,
+	})
+
+	// 9. 构造 HTTP 服务。
 	// ReadHeaderTimeout 用于防止慢速请求头攻击：客户端只发一半请求头就不动了，
 	// 连接会一直被占用。设置上限后，超时会自动断开。
 	srv := &http.Server{
@@ -88,7 +94,7 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// 9. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
+	// 10. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -96,7 +102,7 @@ func run() error {
 	)
 	defer stop()
 
-	// 10. 启动服务并阻塞，直到出错或被信号中断。
+	// 11. 启动服务并阻塞，直到出错或被信号中断。
 	if err := server.Run(ctx, srv); err != nil {
 		return err
 	}

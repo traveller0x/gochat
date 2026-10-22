@@ -4,16 +4,29 @@ import (
 	"gochat/internal/handler"
 	"gochat/internal/middleware"
 	"gochat/internal/service"
+	"gochat/internal/ws"
 
 	"github.com/gin-gonic/gin"
 )
 
+// Deps 汇总路由需要的所有依赖。
+//
+// 参数超过三个时用结构体传递：
+// 调用方写字段名不会传错顺序，将来新增依赖也不用改所有调用点。
+type Deps struct {
+	UserService    *service.UserService
+	Hub            *ws.Hub
+	JWTSecret      string
+	JWTExpireHours int
+}
+
 // SetupRouter 初始化 HTTP 路由。
-func SetupRouter(
-	userService *service.UserService,
-	jwtSecret string,
-	jwtExpireHours int,
-) *gin.Engine {
+func SetupRouter(deps Deps) *gin.Engine {
+	// 依赖缺失时立即失败，避免运行到一半才 panic。
+	if deps.Hub == nil {
+		panic("router: Deps.Hub must not be nil")
+	}
+
 	r := gin.Default()
 
 	// 健康检查。
@@ -21,13 +34,16 @@ func SetupRouter(
 
 	// 身份认证接口。
 	authHandler := handler.NewAuthHandler(
-		userService,
-		jwtSecret,
-		jwtExpireHours,
+		deps.UserService,
+		deps.JWTSecret,
+		deps.JWTExpireHours,
 	)
 
 	// 用户资料接口。
-	userHandler := handler.NewUserHandler(userService)
+	userHandler := handler.NewUserHandler(deps.UserService)
+
+	// WebSocket 接口。
+	wsHandler := handler.NewWSHandler(deps.Hub, deps.JWTSecret)
 
 	api := r.Group("/api/v1")
 	{
@@ -40,11 +56,16 @@ func SetupRouter(
 
 		// 用户资料接口需要通过 JWT 身份认证。
 		users := api.Group("/users")
-		users.Use(middleware.JWTAuth(jwtSecret))
+		users.Use(middleware.JWTAuth(deps.JWTSecret))
 		{
 			// 获取当前登录用户的信息。
 			users.GET("/me", userHandler.Me)
 		}
+
+		// WebSocket 连接不能挂 JWTAuth 中间件：
+		// 浏览器无法给 WebSocket 请求设置自定义 Header，
+		// 所以 token 通过 query 传递，由处理器自己校验。
+		api.GET("/ws", wsHandler.Serve)
 	}
 
 	return r
