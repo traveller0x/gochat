@@ -27,9 +27,9 @@ func receive(t *testing.T, c *Client) []byte {
 func TestHubSendToUserAllDevices(t *testing.T) {
 	hub := NewHub()
 
-	mobile := NewClient(1, 4)
-	laptop := NewClient(1, 4)
-	other := NewClient(2, 4)
+	mobile := NewClient(1, nil, 4)
+	laptop := NewClient(1, nil, 4)
+	other := NewClient(2, nil, 4)
 
 	hub.Register(mobile)
 	hub.Register(laptop)
@@ -70,7 +70,7 @@ func TestHubSendToOfflineUser(t *testing.T) {
 func TestHubDropsSlowClient(t *testing.T) {
 	hub := NewHub()
 
-	slow := NewClient(1, 1)
+	slow := NewClient(1, nil, 1)
 	hub.Register(slow)
 
 	// 先填满缓冲区：消息进入队列但没人消费。
@@ -101,8 +101,8 @@ func TestHubDropsSlowClient(t *testing.T) {
 func TestHubKeepsHealthyClientWhenAnotherFails(t *testing.T) {
 	hub := NewHub()
 
-	slow := NewClient(1, 1)
-	healthy := NewClient(1, 4)
+	slow := NewClient(1, nil, 1)
+	healthy := NewClient(1, nil, 4)
 
 	hub.Register(slow)
 	hub.Register(healthy)
@@ -132,7 +132,7 @@ func TestHubKeepsHealthyClientWhenAnotherFails(t *testing.T) {
 func TestHubUnregisterIdempotent(t *testing.T) {
 	hub := NewHub()
 
-	c := NewClient(1, 1)
+	c := NewClient(1, nil, 1)
 	hub.Register(c)
 
 	hub.Unregister(c)
@@ -165,7 +165,7 @@ func TestHubConcurrentRegisterUnregister(t *testing.T) {
 			defer wg.Done()
 
 			userID := uint64(i%users + 1)
-			c := NewClient(userID, 4)
+			c := NewClient(userID, nil, 4)
 
 			hub.Register(c)
 			hub.SendToUser(userID, []byte(fmt.Sprintf("msg-%d", i)))
