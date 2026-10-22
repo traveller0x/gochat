@@ -56,5 +56,10 @@ func Load(path string) (*Config, error) {
 		cfg.MySQL.Password = password
 	}
 
+	// 从环境变量读取 JWT 密钥，避免将真实密钥写入配置文件。
+	if secret, exists := os.LookupEnv("GOCHAT_JWT_SECRET"); exists {
+		cfg.JWT.Secret = secret
+	}
+
 	return &cfg, nil
 }

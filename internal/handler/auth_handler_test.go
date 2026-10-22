@@ -19,7 +19,7 @@ import (
 // mockAuthUserRepository 是 Handler 测试使用的模拟 Repository。
 // 它在内存中模拟数据库，不需要连接 MySQL。
 type mockAuthUserRepository struct {
-	users map[string]bool
+	users map[string]*model.User
 }
 
 // Create 模拟创建用户，并检查用户名是否重复。
@@ -31,23 +31,70 @@ func (m *mockAuthUserRepository) Create(
 		return err
 	}
 
-	if m.users[user.Username] {
-		return fmt.Errorf("username already exists: %w", gorm.ErrDuplicatedKey)
+	if _, exists := m.users[user.Username]; exists {
+		return fmt.Errorf(
+			"username already exists: %w",
+			gorm.ErrDuplicatedKey,
+		)
 	}
 
-	m.users[user.Username] = true
-	user.ID = uint64(len(m.users))
+	// 模拟数据库自增 ID。
+	user.ID = uint64(len(m.users) + 1)
+
+	// 保存用户副本，避免外部修改影响模拟数据。
+	userCopy := *user
+	m.users[user.Username] = &userCopy
 
 	return nil
+}
+
+// GetByUsername 根据用户名查询模拟用户。
+func (m *mockAuthUserRepository) GetByUsername(
+	ctx context.Context,
+	username string,
+) (*model.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	user, exists := m.users[username]
+	if !exists {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	return user, nil
+}
+
+// GetByID 根据用户 ID 查询模拟用户。
+func (m *mockAuthUserRepository) GetByID(
+	ctx context.Context,
+	id uint64,
+) (*model.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, user := range m.users {
+		if user.ID == id {
+			return user, nil
+		}
+	}
+
+	return nil, gorm.ErrRecordNotFound
 }
 
 // newTestAuthHandler 创建使用模拟 Repository 的 Handler。
 func newTestAuthHandler() *AuthHandler {
 	repo := &mockAuthUserRepository{
-		users: make(map[string]bool),
+		users: make(map[string]*model.User),
 	}
+
 	userService := service.NewUserService(repo)
-	return NewAuthHandler(userService)
+	return NewAuthHandler(
+		userService,
+		"test-secret-for-gochat-handler-tests-2026",
+		24,
+	)
 }
 
 // performRegister 模拟发送注册 HTTP 请求。

@@ -56,3 +56,22 @@ func (r *UserRepository) GetByUsername(
 
 	return &user, nil
 }
+
+// GetByID 根据用户 ID 查询用户。
+func (r *UserRepository) GetByID(
+	ctx context.Context,
+	id uint64,
+) (*model.User, error) {
+	var user model.User
+
+	err := r.db.WithContext(ctx).First(&user, id).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+
+		return nil, fmt.Errorf("get user by id: %w", err)
+	}
+
+	return &user, nil
+}

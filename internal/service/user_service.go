@@ -16,27 +16,23 @@ import (
 
 // 定义注册过程中可能出现的业务错误。
 var (
-	ErrInvalidUsername = errors.New("invalid username")
-	ErrInvalidPassword = errors.New("invalid password")
-	ErrInvalidNickname = errors.New("invalid nickname")
-	ErrUsernameTaken   = errors.New("username already exists")
+	ErrInvalidUsername    = errors.New("invalid username")
+	ErrInvalidPassword    = errors.New("invalid password")
+	ErrInvalidNickname    = errors.New("invalid nickname")
+	ErrUsernameTaken      = errors.New("username already exists")
+	ErrInvalidCredentials = errors.New("invalid username or password")
 )
 
-// // UserService 负责用户相关的业务逻辑。
-// type UserService struct {
-// 	userRepo *repository.UserRepository
-// }
-
-// // NewUserService 创建用户业务服务。
-// func NewUserService(userRepo *repository.UserRepository) *UserService {
-// 	return &UserService{
-// 		userRepo: userRepo,
-// 	}
-// }
-
-// userRepository 定义用户注册业务需要的数据库操作。
 type userRepository interface {
+	// Create 创建用户记录。
 	Create(ctx context.Context, user *model.User) error
+
+	// GetByUsername 根据用户名查询用户。
+	GetByUsername(ctx context.Context, username string) (*model.User, error)
+
+	// GetByID 根据用户 ID 查询用户。
+
+	GetByID(ctx context.Context, id uint64) (*model.User, error)
 }
 
 // UserService 负责用户相关的业务逻辑。
@@ -107,6 +103,67 @@ func (s *UserService) Register(
 		}
 
 		return nil, fmt.Errorf("register user: %w", err)
+	}
+
+	return user, nil
+}
+
+// Login 验证用户身份。
+// 用户名不存在和密码错误时，统一返回 ErrInvalidCredentials。
+func (s *UserService) Login(
+	ctx context.Context,
+	username string,
+	password string,
+) (*model.User, error) {
+	username = strings.TrimSpace(username)
+
+	// 基本参数校验。
+	if username == "" || password == "" {
+		return nil, ErrInvalidCredentials
+	}
+
+	// 根据用户名查询用户。
+	user, err := s.userRepo.GetByUsername(ctx, username)
+	if err != nil {
+		// 用户不存在和密码错误使用相同的错误。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrInvalidCredentials
+		}
+
+		// 数据库故障等其他错误应该保留，方便排查。
+		return nil, fmt.Errorf("login: %w", err)
+	}
+
+	// 验证密码与数据库中的 bcrypt 哈希是否匹配。
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(user.PasswordHash),
+		[]byte(password),
+	); err != nil {
+		return nil, ErrInvalidCredentials
+	}
+
+	return user, nil
+}
+
+// GetByID 根据用户 ID 获取用户信息。
+func (s *UserService) GetByID(
+	ctx context.Context,
+	id uint64,
+) (*model.User, error) {
+	// 用户 ID 必须大于 0。
+	if id == 0 {
+		return nil, errors.New("invalid user id")
+	}
+
+	// 调用 Repository 查询用户。
+	user, err := s.userRepo.GetByID(ctx, id)
+	if err != nil {
+		// 用户不存在时，保留原始错误，交由上层处理。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+
+		return nil, fmt.Errorf("get user by id: %w", err)
 	}
 
 	return user, nil
