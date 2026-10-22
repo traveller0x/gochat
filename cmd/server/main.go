@@ -1,42 +1,63 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"gochat/internal/config"
 	"gochat/internal/database"
 	"gochat/internal/repository"
 	"gochat/internal/router"
+	"gochat/internal/server"
 	"gochat/internal/service"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatalf("server exited with error: %v", err)
+	}
+}
+
+// run 负责组装依赖并启动服务。
+// 返回 nil 表示收到了退出信号并已完成优雅关闭。
+//
+// 把逻辑从 main 拆出来的原因：
+// 1. main 里不能写 defer（os.Exit 不会执行 defer）；
+// 2. run 可以被测试直接调用，而 main 只能靠启动进程测试。
+func run() error {
 	// 1. 加载配置。
 	cfg, err := config.Load("configs/config.yaml")
 	if err != nil {
-		log.Fatalf("load config failed: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	// 2. 检查 JWT 配置。
 	if len(cfg.JWT.Secret) < 32 {
-		log.Fatal("JWT secret must contain at least 32 bytes; configure GOCHAT_JWT_SECRET")
+		return fmt.Errorf(
+			"JWT secret must contain at least 32 bytes; configure GOCHAT_JWT_SECRET",
+		)
 	}
 
 	if cfg.JWT.ExpireHours <= 0 {
-		log.Fatal("JWT expire_hours must be greater than 0")
+		return fmt.Errorf("JWT expire_hours must be greater than 0")
 	}
 
 	// 3. 初始化 MySQL。
 	db, err := database.NewMySQL(cfg.MySQL)
 	if err != nil {
-		log.Fatalf("initialize MySQL failed: %v", err)
+		return fmt.Errorf("initialize MySQL: %w", err)
 	}
 
 	// 4. 获取底层数据库连接，用于管理连接池生命周期。
 	sqlDB, err := db.DB()
 	if err != nil {
-		log.Fatalf("get SQL DB failed: %v", err)
+		return fmt.Errorf("get SQL DB: %w", err)
 	}
 
 	defer func() {
@@ -58,11 +79,29 @@ func main() {
 		cfg.JWT.ExpireHours,
 	)
 
-	// 8. 启动 HTTP 服务。
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	log.Printf("GoChat server starting on %s", addr)
-
-	if err := r.Run(addr); err != nil {
-		log.Fatalf("server stopped: %v", err)
+	// 8. 构造 HTTP 服务。
+	// ReadHeaderTimeout 用于防止慢速请求头攻击：客户端只发一半请求头就不动了，
+	// 连接会一直被占用。设置上限后，超时会自动断开。
+	srv := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	// 9. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	// 10. 启动服务并阻塞，直到出错或被信号中断。
+	if err := server.Run(ctx, srv); err != nil {
+		return err
+	}
+
+	log.Println("shutdown complete")
+
+	return nil
 }
