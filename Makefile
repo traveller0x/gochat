@@ -43,3 +43,30 @@ tidy: ## 整理 go.mod
 
 .PHONY: check
 check: vet test-race ## 提交前自检：静态检查 + 竞争检测测试
+
+.PHONY: migrate-up
+migrate-up: ## 应用所有未执行的迁移
+	@set -a; \
+	if [ -f .env ]; then . ./.env; fi; \
+	set +a; \
+	migrate -path migrations \
+		-database "mysql://root:$$MYSQL_ROOT_PASSWORD@tcp(127.0.0.1:3306)/gochat?charset=utf8mb4&multiStatements=true" \
+		up
+
+.PHONY: migrate-down
+migrate-down: ## 回滚最近一次迁移
+	@set -a; \
+	if [ -f .env ]; then . ./.env; fi; \
+	set +a; \
+	migrate -path migrations \
+		-database "mysql://root:$$MYSQL_ROOT_PASSWORD@tcp(127.0.0.1:3306)/gochat?charset=utf8mb4&multiStatements=true" \
+		down 1
+
+.PHONY: migrate-version
+migrate-version: ## 查看当前迁移版本
+	@set -a; \
+	if [ -f .env ]; then . ./.env; fi; \
+	set +a; \
+	migrate -path migrations \
+		-database "mysql://root:$$MYSQL_ROOT_PASSWORD@tcp(127.0.0.1:3306)/gochat?charset=utf8mb4&multiStatements=true" \
+		version
