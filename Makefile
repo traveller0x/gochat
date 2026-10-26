@@ -70,3 +70,10 @@ migrate-version: ## 查看当前迁移版本
 	migrate -path migrations \
 		-database "mysql://root:$$MYSQL_ROOT_PASSWORD@tcp(127.0.0.1:3306)/gochat?charset=utf8mb4&multiStatements=true" \
 		version
+
+.PHONY: test-integration
+test-integration: ## 运行依赖真实 MySQL 的集成测试
+	@set -a; \
+	if [ -f .env ]; then . ./.env; fi; \
+	set +a; \
+	go test -race ./tests -v -count=1
