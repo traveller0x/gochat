@@ -15,6 +15,7 @@ import (
 // 调用方写字段名不会传错顺序，将来新增依赖也不用改所有调用点。
 type Deps struct {
 	UserService    *service.UserService
+	ChatService    *service.ChatService
 	Hub            *ws.Hub
 	JWTSecret      string
 	JWTExpireHours int
@@ -23,8 +24,8 @@ type Deps struct {
 // SetupRouter 初始化 HTTP 路由。
 func SetupRouter(deps Deps) *gin.Engine {
 	// 依赖缺失时立即失败，避免运行到一半才 panic。
-	if deps.Hub == nil {
-		panic("router: Deps.Hub must not be nil")
+	if deps.Hub == nil || deps.ChatService == nil {
+		panic("router: Deps.Hub and Deps.ChatService must not be nil")
 	}
 
 	r := gin.Default()
@@ -43,7 +44,7 @@ func SetupRouter(deps Deps) *gin.Engine {
 	userHandler := handler.NewUserHandler(deps.UserService)
 
 	// WebSocket 接口。
-	wsHandler := handler.NewWSHandler(deps.Hub, deps.JWTSecret)
+	wsHandler := handler.NewWSHandler(deps.Hub, deps.ChatService, deps.JWTSecret)
 
 	api := r.Group("/api/v1")
 	{

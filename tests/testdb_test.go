@@ -12,6 +12,7 @@ import (
 	"gochat/internal/repository"
 
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // openTestDB 打开真实 MySQL 连接；未配置密码时跳过测试。
@@ -28,7 +29,8 @@ func openTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("load config failed: %v", err)
 	}
 
-	db, err := database.NewMySQL(cfg.MySQL)
+	db, err := database.NewMySQLWithLogger(cfg.MySQL, gormlogger.Discard)
+
 	if err != nil {
 		t.Fatalf("connect to MySQL failed: %v", err)
 	}

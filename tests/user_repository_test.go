@@ -14,6 +14,7 @@ import (
 	"gochat/internal/repository"
 
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // TestUserRepository 测试用户数据访问层。
@@ -31,7 +32,8 @@ func TestUserRepository(t *testing.T) {
 	}
 
 	// 3. 创建数据库连接。
-	db, err := database.NewMySQL(cfg.MySQL)
+	db, err := database.NewMySQLWithLogger(cfg.MySQL, gormlogger.Discard)
+
 	if err != nil {
 		t.Fatalf("connect to MySQL failed: %v", err)
 	}

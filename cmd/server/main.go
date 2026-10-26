@@ -69,6 +69,8 @@ func run() error {
 
 	// 5. 初始化 Repository。
 	userRepo := repository.NewUserRepository(db)
+	conversationRepo := repository.NewConversationRepository(db)
+	messageRepo := repository.NewMessageRepository(db)
 
 	// 6. 初始化 Service。
 	userService := service.NewUserService(userRepo)
@@ -77,15 +79,20 @@ func run() error {
 	//    Hub 是整个进程唯一的在线连接注册表，生命周期与 HTTP 服务一致。
 	hub := ws.NewHub()
 
-	// 8. 初始化路由，注入业务服务、连接中心和 JWT 配置。
+	// 8. 初始化聊天服务。
+	//    Hub 实现了 SendToUser，因此可以直接作为消息推送器注入。
+	chatService := service.NewChatService(conversationRepo, messageRepo, hub)
+
+	// 9. 初始化路由，注入业务服务、连接中心和 JWT 配置。
 	r := router.SetupRouter(router.Deps{
 		UserService:    userService,
+		ChatService:    chatService,
 		Hub:            hub,
 		JWTSecret:      cfg.JWT.Secret,
 		JWTExpireHours: cfg.JWT.ExpireHours,
 	})
 
-	// 9. 构造 HTTP 服务。
+	// 10. 构造 HTTP 服务。
 	// ReadHeaderTimeout 用于防止慢速请求头攻击：客户端只发一半请求头就不动了，
 	// 连接会一直被占用。设置上限后，超时会自动断开。
 	srv := &http.Server{
@@ -94,7 +101,7 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// 10. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
+	// 11. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -102,7 +109,7 @@ func run() error {
 	)
 	defer stop()
 
-	// 11. 启动服务并阻塞，直到出错或被信号中断。
+	// 12. 启动服务并阻塞，直到出错或被信号中断。
 	if err := server.Run(ctx, srv); err != nil {
 		return err
 	}

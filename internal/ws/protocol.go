@@ -53,6 +53,26 @@ type MessagePayload struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// MessageSendPayload 是 message.send 帧的数据体（客户端 → 服务端）。
+type MessageSendPayload struct {
+	ConversationID uint64 `json:"conversation_id"`
+	ClientMsgID    string `json:"client_msg_id"`
+	ContentType    uint8  `json:"content_type"`
+	Content        string `json:"content"`
+}
+
+// MessageAckPayload 是 message.ack 帧的数据体（服务端 → 发送方）。
+//
+// 客户端用 client_msg_id 把 ack 对应回本地那条"发送中"的消息，
+// 再写入服务端分配的 id 和 seq。
+type MessageAckPayload struct {
+	ClientMsgID    string `json:"client_msg_id"`
+	ID             uint64 `json:"id"`
+	ConversationID uint64 `json:"conversation_id"`
+	Seq            uint64 `json:"seq"`
+	Duplicated     bool   `json:"duplicated"`
+}
+
 // NewEnvelope 把业务数据序列化成可直接发送的帧。
 func NewEnvelope(messageType string, payload any) ([]byte, error) {
 	var data json.RawMessage

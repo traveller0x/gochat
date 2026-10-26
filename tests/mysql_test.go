@@ -6,6 +6,8 @@ import (
 
 	"gochat/internal/config"
 	"gochat/internal/database"
+
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func TestMySQLConnection(t *testing.T) {
@@ -19,7 +21,8 @@ func TestMySQLConnection(t *testing.T) {
 		t.Fatalf("load config failed: %v", err)
 	}
 
-	db, err := database.NewMySQL(cfg.MySQL)
+	db, err := database.NewMySQLWithLogger(cfg.MySQL, gormlogger.Discard)
+
 	if err != nil {
 		t.Fatalf("connect to MySQL failed: %v", err)
 	}

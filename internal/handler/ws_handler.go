@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
 	"gochat/internal/auth"
+	"gochat/internal/service"
 	"gochat/internal/ws"
 	"gochat/pkg/response"
 
@@ -26,16 +29,30 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// messageSender 抽象发送消息的业务能力，便于测试替换。
+type messageSender interface {
+	SendMessage(
+		ctx context.Context,
+		senderID uint64,
+		conversationID uint64,
+		clientMsgID string,
+		contentType uint8,
+		content string,
+	) (*service.SendMessageResult, error)
+}
+
 // WSHandler 处理 WebSocket 连接。
 type WSHandler struct {
 	hub       *ws.Hub
+	chat      messageSender
 	jwtSecret string
 }
 
 // NewWSHandler 创建 WebSocket 处理器。
-func NewWSHandler(hub *ws.Hub, jwtSecret string) *WSHandler {
+func NewWSHandler(hub *ws.Hub, chat messageSender, jwtSecret string) *WSHandler {
 	return &WSHandler{
 		hub:       hub,
+		chat:      chat,
 		jwtSecret: jwtSecret,
 	}
 }
@@ -83,8 +100,12 @@ func (h *WSHandler) Serve(c *gin.Context) {
 	go client.WritePump(ws.PingInterval)
 
 	// 6. 读循环阻塞在这里，直到连接断开。
+	//    使用请求级 context：连接断开时会被取消，
+	//    下游的数据库操作也会随之中断，不会在断连后继续写库。
+	ctx := c.Request.Context()
+
 	client.ReadPump(func(payload []byte) {
-		h.handleMessage(client, payload)
+		h.handleMessage(ctx, client, payload)
 	})
 
 	// 7. 连接已断开，清理资源。
@@ -101,9 +122,12 @@ func (h *WSHandler) Serve(c *gin.Context) {
 }
 
 // handleMessage 处理客户端发来的业务消息。
-//
-// 当前只支持 ping/pong，真正的消息收发在第 8 步接入 ChatService。
-func (h *WSHandler) handleMessage(client *ws.Client, payload []byte) {
+// handleMessage 处理客户端发来的业务消息。
+func (h *WSHandler) handleMessage(
+	ctx context.Context,
+	client *ws.Client,
+	payload []byte,
+) {
 	var env ws.Envelope
 	if err := json.Unmarshal(payload, &env); err != nil {
 		h.sendError(client, 4001, "invalid message format")
@@ -119,12 +143,71 @@ func (h *WSHandler) handleMessage(client *ws.Client, payload []byte) {
 
 		_ = client.Send(reply)
 
+	case ws.TypeMessageSend:
+		h.handleSendMessage(ctx, client, env.Data)
+
 	case "":
 		h.sendError(client, 4001, "missing message type")
 
 	default:
 		h.sendError(client, 4004, "unsupported message type")
 	}
+}
+
+// handleSendMessage 处理 message.send：落库后返回 message.ack。
+//
+// 注意：message.new 的推送由 ChatService 完成，Handler 只负责 ack。
+func (h *WSHandler) handleSendMessage(
+	ctx context.Context,
+	client *ws.Client,
+	data json.RawMessage,
+) {
+	var req ws.MessageSendPayload
+	if err := json.Unmarshal(data, &req); err != nil {
+		h.sendError(client, 4001, "invalid message payload")
+		return
+	}
+
+	result, err := h.chat.SendMessage(
+		ctx,
+		client.UserID(),
+		req.ConversationID,
+		req.ClientMsgID,
+		req.ContentType,
+		req.Content,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidMessage):
+			h.sendError(client, 4001, "invalid message")
+
+		case errors.Is(err, service.ErrNotConversationMember):
+			h.sendError(client, 4031, "not a conversation member")
+
+		case errors.Is(err, service.ErrConversationNotFound):
+			h.sendError(client, 4040, "conversation not found")
+
+		default:
+			log.Printf("send message failed: user=%d err=%v", client.UserID(), err)
+			h.sendError(client, 5000, "internal server error")
+		}
+
+		return
+	}
+
+	ack, err := ws.NewEnvelope(ws.TypeMessageAck, ws.MessageAckPayload{
+		ClientMsgID:    result.Message.ClientMsgID,
+		ID:             result.Message.ID,
+		ConversationID: result.Message.ConversationID,
+		Seq:            result.Message.Seq,
+		Duplicated:     result.Duplicated,
+	})
+	if err != nil {
+		log.Printf("build ack payload failed: %v", err)
+		return
+	}
+
+	_ = client.Send(ack)
 }
 
 // sendError 向客户端推送错误帧。
