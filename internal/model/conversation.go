@@ -50,7 +50,9 @@ type ConversationMember struct {
 	Role        uint8  `gorm:"not null;default:0" json:"role"`
 	LastReadSeq uint64 `gorm:"not null;default:0" json:"last_read_seq"`
 
-	JoinedAt time.Time `json:"joined_at"`
+	// autoCreateTime 让 GORM 在插入时自动填入当前时间。
+	// 字段名不是约定的 CreatedAt，必须显式声明，否则会写入零值时间。
+	JoinedAt time.Time `gorm:"autoCreateTime" json:"joined_at"`
 }
 
 // TableName 指定数据库表名。
