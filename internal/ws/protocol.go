@@ -1,6 +1,9 @@
 package ws
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // WebSocket 帧的类型。客户端和服务端共用同一套 envelope。
 const (
@@ -12,6 +15,15 @@ const (
 
 	// TypeError 服务端返回错误。
 	TypeError = "error"
+
+	// TypeMessageSend 客户端发送消息。
+	TypeMessageSend = "message.send"
+
+	// TypeMessageAck 服务端确认消息已落库。
+	TypeMessageAck = "message.ack"
+
+	// TypeMessageNew 服务端推送新消息。
+	TypeMessageNew = "message.new"
 )
 
 // Envelope 是 WebSocket 帧的统一结构。
@@ -27,6 +39,18 @@ type Envelope struct {
 type ErrorPayload struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+// MessagePayload 是 message.new 帧的数据体。
+type MessagePayload struct {
+	ID             uint64    `json:"id"`
+	ConversationID uint64    `json:"conversation_id"`
+	SenderID       uint64    `json:"sender_id"`
+	Seq            uint64    `json:"seq"`
+	ClientMsgID    string    `json:"client_msg_id"`
+	ContentType    uint8     `json:"content_type"`
+	Content        string    `json:"content"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // NewEnvelope 把业务数据序列化成可直接发送的帧。
