@@ -71,6 +71,9 @@ func SetupRouter(deps Deps) *gin.Engine {
 		{
 			// 会话列表（含未读数、最后一条消息、单聊对方信息）。
 			conversations.GET("", conversationHandler.List)
+			// 历史消息与补洞，seq 游标分页。
+			conversations.GET("/:id/messages", conversationHandler.Messages)
+
 		}
 
 		// WebSocket 连接不能挂 JWTAuth 中间件：

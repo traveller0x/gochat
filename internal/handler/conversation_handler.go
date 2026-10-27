@@ -20,6 +20,14 @@ type conversationChatService interface {
 		userID uint64,
 		limit int,
 	) ([]service.ConversationSummary, error)
+
+	ListMessages(
+		ctx context.Context,
+		userID uint64,
+		conversationID uint64,
+		cursor service.MessageCursor,
+		limit int,
+	) ([]model.Message, bool, error)
 }
 
 // ConversationHandler 处理会话相关的 HTTP 请求。
@@ -148,4 +156,139 @@ func parsePositiveInt(raw string) (int, error) {
 	}
 
 	return value, nil
+}
+
+// Messages 处理 GET /api/v1/conversations/:id/messages。
+//
+// 游标分页：
+//   - before_seq：往前翻历史，返回 desc
+//   - after_seq：往后补洞，返回 asc（after_seq=0 表示从最早开始）
+//   - 都不传：返回最近一页（desc）
+func (h *ConversationHandler) Messages(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, 4011, "unauthorized")
+		return
+	}
+
+	conversationID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || conversationID == 0 {
+		response.Error(c, http.StatusBadRequest, 4001, "invalid conversation id")
+		return
+	}
+
+	cursor, err := parseMessageCursor(c)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, 4001, err.Error())
+		return
+	}
+
+	limit, err := parsePositiveInt(c.Query("limit"))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, 4001, "invalid limit")
+		return
+	}
+
+	messages, hasMore, err := h.chat.ListMessages(
+		c.Request.Context(),
+		userID,
+		conversationID,
+		cursor,
+		limit,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotConversationMember):
+			response.Error(c, http.StatusForbidden, 4031, "not a conversation member")
+
+		case errors.Is(err, service.ErrInvalidMessage):
+			response.Error(c, http.StatusBadRequest, 4001, "invalid request")
+
+		default:
+			response.Error(c, http.StatusInternalServerError, 5000, "internal server error")
+		}
+
+		return
+	}
+
+	items := make([]messageResponse, 0, len(messages))
+	for i := range messages {
+		items = append(items, *newMessageResponse(&messages[i]))
+	}
+
+	order := "desc"
+	if cursor.Direction == service.MessageDirectionAfter {
+		order = "asc"
+	}
+
+	var nextBeforeSeq, nextAfterSeq uint64
+
+	if len(messages) > 0 {
+		last := messages[len(messages)-1].Seq
+
+		if order == "desc" {
+			nextBeforeSeq = last
+		} else {
+			nextAfterSeq = last
+		}
+	}
+
+	response.Success(c, gin.H{
+		"messages":        items,
+		"order":           order,
+		"has_more":        hasMore,
+		"next_before_seq": nextBeforeSeq,
+		"next_after_seq":  nextAfterSeq,
+	})
+}
+
+// parseMessageCursor 把查询参数转换成显式游标。
+//
+// 关键：用 GetQuery 判断参数"是否存在"，而不是用 0 判断"是否指定"。
+// after_seq=0 与"没传 after_seq"是两种不同语义。
+func parseMessageCursor(c *gin.Context) (service.MessageCursor, error) {
+	beforeRaw, hasBefore := c.GetQuery("before_seq")
+	afterRaw, hasAfter := c.GetQuery("after_seq")
+
+	if hasBefore && hasAfter {
+		return service.MessageCursor{},
+			errors.New("before_seq and after_seq cannot be used together")
+	}
+
+	if hasAfter {
+		seq, err := parseUintQuery(afterRaw)
+		if err != nil {
+			return service.MessageCursor{}, errors.New("invalid after_seq")
+		}
+
+		return service.MessageCursor{
+			Direction: service.MessageDirectionAfter,
+			Seq:       seq,
+		}, nil
+	}
+
+	if hasBefore {
+		seq, err := parseUintQuery(beforeRaw)
+		if err != nil {
+			return service.MessageCursor{}, errors.New("invalid before_seq")
+		}
+
+		return service.MessageCursor{
+			Direction: service.MessageDirectionBefore,
+			Seq:       seq,
+		}, nil
+	}
+
+	return service.MessageCursor{
+		Direction: service.MessageDirectionLatest,
+	}, nil
+}
+
+// parseUintQuery 解析可选的 uint 查询参数，空字符串视为 0。
+func parseUintQuery(raw string) (uint64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+
+	return strconv.ParseUint(raw, 10, 64)
 }

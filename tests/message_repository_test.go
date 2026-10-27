@@ -186,3 +186,52 @@ func TestMessageRepositorySeqConflict(t *testing.T) {
 		t.Fatalf("error = %v, want %v", err, repository.ErrSeqConflict)
 	}
 }
+
+// TestMessageRepositoryListAfterSeq 测试补洞查询（升序、只取游标之后）。
+func TestMessageRepositoryListAfterSeq(t *testing.T) {
+	db := openTestDB(t)
+
+	conv, userA, _ := newTestConversationWithMembers(t, db)
+	repo := repository.NewMessageRepository(db)
+	ctx := context.Background()
+
+	for i := 1; i <= 5; i++ {
+		if _, _, _, err := repo.AppendMessage(
+			ctx,
+			conv.ID,
+			userA,
+			fmt.Sprintf("after-client-%d", i),
+			model.MessageContentTypeText,
+			fmt.Sprintf("message %d", i),
+		); err != nil {
+			t.Fatalf("append message %d failed: %v", i, err)
+		}
+	}
+
+	// 本地最大 seq = 2，补洞应拿到 3、4、5。
+	messages, err := repo.ListAfterSeq(ctx, conv.ID, 2, 10)
+	if err != nil {
+		t.Fatalf("ListAfterSeq failed: %v", err)
+	}
+
+	if len(messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(messages))
+	}
+
+	for i, msg := range messages {
+		wantSeq := uint64(i + 3)
+		if msg.Seq != wantSeq {
+			t.Errorf("messages[%d].seq = %d, want %d（必须是升序）", i, msg.Seq, wantSeq)
+		}
+	}
+
+	// 分页：limit=2 时只回 3、4。
+	page, err := repo.ListAfterSeq(ctx, conv.ID, 2, 2)
+	if err != nil {
+		t.Fatalf("ListAfterSeq page failed: %v", err)
+	}
+
+	if len(page) != 2 || page[0].Seq != 3 || page[1].Seq != 4 {
+		t.Fatalf("page seqs = %+v, want [3 4]", []uint64{page[0].Seq, page[1].Seq})
+	}
+}

@@ -45,6 +45,14 @@ func (f *fakeConvRepo) ListByUser(
 	return nil, nil
 }
 
+func (f *fakeConvRepo) IsMember(
+	ctx context.Context,
+	conversationID uint64,
+	userID uint64,
+) (bool, error) {
+	return true, nil
+}
+
 // fakeMsgRepo 是内存版消息仓储：实现 seq 分配和 client_msg_id 幂等，
 // 让 handler 的端到端测试不依赖 MySQL。
 type fakeMsgRepo struct {
@@ -60,6 +68,24 @@ func newFakeMsgRepo(members ...uint64) *fakeMsgRepo {
 		members:       members,
 		byClientMsgID: make(map[string]*model.Message),
 	}
+}
+
+func (f *fakeMsgRepo) ListBeforeSeq(
+	ctx context.Context,
+	conversationID uint64,
+	beforeSeq uint64,
+	limit int,
+) ([]model.Message, error) {
+	return nil, nil
+}
+
+func (f *fakeMsgRepo) ListAfterSeq(
+	ctx context.Context,
+	conversationID uint64,
+	afterSeq uint64,
+	limit int,
+) ([]model.Message, error) {
+	return nil, nil
 }
 
 func (f *fakeMsgRepo) AppendMessage(

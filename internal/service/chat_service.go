@@ -46,6 +46,9 @@ type chatConversationRepository interface {
 		userB uint64,
 	) (*model.Conversation, error)
 
+	// IsMember 判断用户是否属于会话。
+	IsMember(ctx context.Context, conversationID uint64, userID uint64) (bool, error)
+
 	// ListByUser 返回用户加入的会话列表。
 	ListByUser(
 		ctx context.Context,
@@ -64,6 +67,22 @@ type chatMessageRepository interface {
 		contentType uint8,
 		content string,
 	) (*model.Message, []uint64, bool, error)
+
+	// ListBeforeSeq 往前翻历史消息（降序）。
+	ListBeforeSeq(
+		ctx context.Context,
+		conversationID uint64,
+		beforeSeq uint64,
+		limit int,
+	) ([]model.Message, error)
+
+	// ListAfterSeq 往后补洞（升序）。
+	ListAfterSeq(
+		ctx context.Context,
+		conversationID uint64,
+		afterSeq uint64,
+		limit int,
+	) ([]model.Message, error)
 }
 
 // messagePusher 定义消息推送能力，由 ws.Hub 实现。
@@ -282,4 +301,77 @@ func (s *ChatService) pushMessage(message *model.Message, memberIDs []uint64) {
 	for _, userID := range memberIDs {
 		s.pusher.SendToUser(userID, payload)
 	}
+}
+
+// MessageDirection 表示消息拉取方向。
+type MessageDirection uint8
+
+const (
+	// MessageDirectionLatest 不带游标，返回最近一页（降序）。
+	MessageDirectionLatest MessageDirection = iota
+
+	// MessageDirectionBefore 往前翻历史（降序）。
+	MessageDirectionBefore
+
+	// MessageDirectionAfter 往后补洞（升序）。
+	MessageDirectionAfter
+)
+
+// MessageCursor 表示消息游标。
+//
+// 用"方向 + 序号"显式表达，而不是用 0 当"未指定"的哨兵：
+// after_seq=0 是合法语义（从最早开始补洞），不能和"没传"混淆。
+type MessageCursor struct {
+	Direction MessageDirection
+	Seq       uint64
+}
+
+// ListMessages 拉取会话消息。
+//
+//   - MessageDirectionBefore：往前翻历史，返回 seq 降序
+//   - MessageDirectionAfter：往后补洞，返回 seq 升序
+//   - MessageDirectionLatest：最近一页，返回 seq 降序
+//
+// hasMore 表示同方向还有更多数据。
+func (s *ChatService) ListMessages(
+	ctx context.Context,
+	userID uint64,
+	conversationID uint64,
+	cursor MessageCursor,
+	limit int,
+) ([]model.Message, bool, error) {
+	if userID == 0 || conversationID == 0 {
+		return nil, false, ErrInvalidMessage
+	}
+
+	// 历史消息属于敏感数据：非成员必须拿不到。
+	member, err := s.convRepo.IsMember(ctx, conversationID, userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("check membership: %w", err)
+	}
+
+	if !member {
+		return nil, false, ErrNotConversationMember
+	}
+
+	normalizedLimit := repository.NormalizeMessageLimit(limit)
+
+	var messages []model.Message
+
+	switch cursor.Direction {
+	case MessageDirectionAfter:
+		messages, err = s.msgRepo.ListAfterSeq(ctx, conversationID, cursor.Seq, normalizedLimit)
+
+	case MessageDirectionBefore, MessageDirectionLatest:
+		messages, err = s.msgRepo.ListBeforeSeq(ctx, conversationID, cursor.Seq, normalizedLimit)
+
+	default:
+		return nil, false, ErrInvalidMessage
+	}
+
+	if err != nil {
+		return nil, false, fmt.Errorf("list messages: %w", err)
+	}
+
+	return messages, len(messages) == normalizedLimit, nil
 }

@@ -120,7 +120,7 @@ func (r *MessageRepository) ListBeforeSeq(
 
 	err := query.
 		Order("seq DESC").
-		Limit(normalizeMessageLimit(limit)).
+		Limit(NormalizeMessageLimit(limit)).
 		Find(&messages).Error
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
@@ -129,8 +129,41 @@ func (r *MessageRepository) ListBeforeSeq(
 	return messages, nil
 }
 
-// normalizeMessageLimit 把分页大小限制在合理区间。
-func normalizeMessageLimit(limit int) int {
+// ListAfterSeq 拉取 afterSeq 之后的消息，按 seq 升序返回。
+//
+// 用于断线重连补洞：客户端保存本地最大 seq，重连后从那里往后拉。
+func (r *MessageRepository) ListAfterSeq(
+	ctx context.Context,
+	conversationID uint64,
+	afterSeq uint64,
+	limit int,
+) ([]model.Message, error) {
+	if conversationID == 0 {
+		return nil, errors.New("invalid conversation id")
+	}
+
+	query := r.db.WithContext(ctx).
+		Where("conversation_id = ?", conversationID)
+
+	if afterSeq > 0 {
+		query = query.Where("seq > ?", afterSeq)
+	}
+
+	var messages []model.Message
+
+	err := query.
+		Order("seq ASC").
+		Limit(NormalizeMessageLimit(limit)).
+		Find(&messages).Error
+	if err != nil {
+		return nil, fmt.Errorf("list messages after seq: %w", err)
+	}
+
+	return messages, nil
+}
+
+// NormalizeMessageLimit 把分页大小限制在合理区间。
+func NormalizeMessageLimit(limit int) int {
 	if limit <= 0 {
 		return DefaultMessagePageSize
 	}

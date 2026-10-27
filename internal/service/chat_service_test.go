@@ -21,6 +21,16 @@ type fakeChatConvRepository struct {
 	called int
 	//会话列表返回值。
 	summaries []repository.ConversationSummary
+	// 新增：成员校验结果。
+	isMember bool
+}
+
+func (f *fakeChatConvRepository) IsMember(
+	ctx context.Context,
+	conversationID uint64,
+	userID uint64,
+) (bool, error) {
+	return f.isMember, nil
 }
 
 func (f *fakeChatConvRepository) ListByUser(
@@ -57,6 +67,27 @@ type fakeChatMsgRepository struct {
 	lastConversationID uint64
 	lastClientMsgID    string
 	lastContent        string
+	// 新增：历史/补洞返回的消息。
+	messages      []model.Message
+	afterMessages []model.Message
+}
+
+func (f *fakeChatMsgRepository) ListBeforeSeq(
+	ctx context.Context,
+	conversationID uint64,
+	beforeSeq uint64,
+	limit int,
+) ([]model.Message, error) {
+	return f.messages, nil
+}
+
+func (f *fakeChatMsgRepository) ListAfterSeq(
+	ctx context.Context,
+	conversationID uint64,
+	afterSeq uint64,
+	limit int,
+) ([]model.Message, error) {
+	return f.afterMessages, nil
 }
 
 func (f *fakeChatMsgRepository) AppendMessage(
