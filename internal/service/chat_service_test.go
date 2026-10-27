@@ -19,6 +19,16 @@ type fakeChatConvRepository struct {
 	conv   *model.Conversation
 	err    error
 	called int
+	//会话列表返回值。
+	summaries []repository.ConversationSummary
+}
+
+func (f *fakeChatConvRepository) ListByUser(
+	ctx context.Context,
+	userID uint64,
+	limit int,
+) ([]repository.ConversationSummary, error) {
+	return f.summaries, nil
 }
 
 func (f *fakeChatConvRepository) CreateSingleConversation(

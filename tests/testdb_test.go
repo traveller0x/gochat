@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -102,4 +103,53 @@ func newTestConversationWithMembers(
 	})
 
 	return conv, userA, userB
+}
+
+// newTestUser 创建一个测试用户，并注册清理逻辑。
+func newTestUser(t *testing.T, db *gorm.DB, prefix string) *model.User {
+	t.Helper()
+
+	repo := repository.NewUserRepository(db)
+
+	user := &model.User{
+		Username:     fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano()),
+		PasswordHash: "test-password-hash",
+		Nickname:     prefix,
+	}
+
+	if err := repo.Create(context.Background(), user); err != nil {
+		t.Fatalf("create test user failed: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := db.Where("id = ?", user.ID).Delete(&model.User{}).Error; err != nil {
+			t.Errorf("cleanup user failed: %v", err)
+		}
+	})
+
+	return user
+}
+
+// newTestConversationBetween 创建两个真实用户之间的单聊并注册清理。
+func newTestConversationBetween(
+	t *testing.T,
+	db *gorm.DB,
+	userA *model.User,
+	userB *model.User,
+) *model.Conversation {
+	t.Helper()
+
+	key := repository.SingleKey(userA.ID, userB.ID)
+
+	conv, err := repository.NewConversationRepository(db).
+		CreateSingleConversation(context.Background(), userA.ID, userB.ID)
+	if err != nil {
+		t.Fatalf("create test conversation failed: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupSingleConversation(t, db, key)
+	})
+
+	return conv
 }

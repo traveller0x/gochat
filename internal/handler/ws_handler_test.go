@@ -37,6 +37,14 @@ func (f *fakeConvRepo) CreateSingleConversation(
 	return f.conv, nil
 }
 
+func (f *fakeConvRepo) ListByUser(
+	ctx context.Context,
+	userID uint64,
+	limit int,
+) ([]repository.ConversationSummary, error) {
+	return nil, nil
+}
+
 // fakeMsgRepo 是内存版消息仓储：实现 seq 分配和 client_msg_id 幂等，
 // 让 handler 的端到端测试不依赖 MySQL。
 type fakeMsgRepo struct {

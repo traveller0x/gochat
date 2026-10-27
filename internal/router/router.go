@@ -63,6 +63,16 @@ func SetupRouter(deps Deps) *gin.Engine {
 			users.GET("/me", userHandler.Me)
 		}
 
+		// 会话接口需要登录。
+		conversationHandler := handler.NewConversationHandler(deps.ChatService)
+
+		conversations := api.Group("/conversations")
+		conversations.Use(middleware.JWTAuth(deps.JWTSecret))
+		{
+			// 会话列表（含未读数、最后一条消息、单聊对方信息）。
+			conversations.GET("", conversationHandler.List)
+		}
+
 		// WebSocket 连接不能挂 JWTAuth 中间件：
 		// 浏览器无法给 WebSocket 请求设置自定义 Header，
 		// 所以 token 通过 query 传递，由处理器自己校验。

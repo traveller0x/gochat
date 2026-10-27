@@ -45,6 +45,13 @@ type chatConversationRepository interface {
 		userA uint64,
 		userB uint64,
 	) (*model.Conversation, error)
+
+	// ListByUser 返回用户加入的会话列表。
+	ListByUser(
+		ctx context.Context,
+		userID uint64,
+		limit int,
+	) ([]repository.ConversationSummary, error)
 }
 
 // chatMessageRepository 定义聊天业务需要的消息操作。
@@ -91,6 +98,75 @@ type SendMessageResult struct {
 
 	// Duplicated 表示这是一次重发，消息已存在，未被重复推送。
 	Duplicated bool
+}
+
+// UserSummary 是会话列表里展示的用户摘要（不含任何敏感字段）。
+type UserSummary struct {
+	ID       uint64
+	Username string
+	Nickname string
+	Avatar   string
+}
+
+// ConversationSummary 是会话列表项的对外结构。
+// 不含 JSON 标签：序列化由 handler 负责。
+type ConversationSummary struct {
+	ID          uint64
+	Type        uint8
+	Name        string
+	UnreadCount int64
+	LastReadSeq uint64
+	LastMessage *model.Message
+
+	// Peer 是单聊的对方用户；群聊为 nil。
+	Peer *UserSummary
+}
+
+// ListConversations 返回用户的会话列表。
+func (s *ChatService) ListConversations(
+	ctx context.Context,
+	userID uint64,
+	limit int,
+) ([]ConversationSummary, error) {
+	if userID == 0 {
+		return nil, ErrInvalidMessage
+	}
+
+	summaries, err := s.convRepo.ListByUser(
+		ctx,
+		userID,
+		repository.NormalizeConversationLimit(limit),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list conversations: %w", err)
+	}
+
+	result := make([]ConversationSummary, 0, len(summaries))
+
+	for _, item := range summaries {
+		var peer *UserSummary
+
+		if item.Peer != nil {
+			peer = &UserSummary{
+				ID:       item.Peer.ID,
+				Username: item.Peer.Username,
+				Nickname: item.Peer.Nickname,
+				Avatar:   item.Peer.Avatar,
+			}
+		}
+
+		result = append(result, ConversationSummary{
+			ID:          item.Conversation.ID,
+			Type:        item.Conversation.Type,
+			Name:        item.Conversation.Name,
+			UnreadCount: item.UnreadCount,
+			LastReadSeq: item.LastReadSeq,
+			LastMessage: item.LastMessage,
+			Peer:        peer,
+		})
+	}
+
+	return result, nil
 }
 
 // CreateSingleConversation 创建或获取两人之间的单聊会话。
