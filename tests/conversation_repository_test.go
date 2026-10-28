@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -227,5 +228,84 @@ func TestConversationRepositoryListByUser(t *testing.T) {
 
 	if summariesA[0].Peer == nil || summariesA[0].Peer.ID != userB.ID {
 		t.Errorf("userA peer = %+v, want user %d", summariesA[0].Peer, userB.ID)
+	}
+}
+
+// TestConversationRepositoryMarkRead 测试已读位置只能前进、会被夹到 last_seq。
+func TestConversationRepositoryMarkRead(t *testing.T) {
+	db := openTestDB(t)
+
+	conv, userA, userB := newTestConversationWithMembers(t, db)
+
+	convRepo := repository.NewConversationRepository(db)
+	msgRepo := repository.NewMessageRepository(db)
+	ctx := context.Background()
+
+	for i := 1; i <= 3; i++ {
+		if _, _, _, err := msgRepo.AppendMessage(
+			ctx, conv.ID, userA,
+			fmt.Sprintf("read-client-%d", i),
+			model.MessageContentTypeText,
+			"hi",
+		); err != nil {
+			t.Fatalf("append message %d failed: %v", i, err)
+		}
+	}
+
+	// ① 已读到 2：未读应为 1。
+	seq, changed, err := convRepo.MarkRead(ctx, conv.ID, userB, 2)
+	if err != nil {
+		t.Fatalf("MarkRead(2) failed: %v", err)
+	}
+
+	if seq != 2 || !changed {
+		t.Errorf("MarkRead(2) = (%d,%v), want (2,true)", seq, changed)
+	}
+
+	summaries, err := convRepo.ListByUser(ctx, userB, 10)
+	if err != nil {
+		t.Fatalf("ListByUser failed: %v", err)
+	}
+
+	if len(summaries) != 1 || summaries[0].UnreadCount != 1 {
+		t.Fatalf("unread = %+v, want 1", summaries)
+	}
+
+	// ② 重复上报 2：没有变化。
+	seq, changed, err = convRepo.MarkRead(ctx, conv.ID, userB, 2)
+	if err != nil {
+		t.Fatalf("MarkRead(2) again failed: %v", err)
+	}
+
+	if seq != 2 || changed {
+		t.Errorf("repeat MarkRead = (%d,%v), want (2,false)", seq, changed)
+	}
+
+	// ③ 回退到 1：不允许后退。
+	seq, changed, err = convRepo.MarkRead(ctx, conv.ID, userB, 1)
+	if err != nil {
+		t.Fatalf("MarkRead(1) failed: %v", err)
+	}
+
+	if seq != 2 || changed {
+		t.Errorf("MarkRead(1) = (%d,%v), want (2,false)", seq, changed)
+	}
+
+	// ④ 伪造 999：被夹到 last_seq = 3。
+	seq, changed, err = convRepo.MarkRead(ctx, conv.ID, userB, 999)
+	if err != nil {
+		t.Fatalf("MarkRead(999) failed: %v", err)
+	}
+
+	if seq != 3 || !changed {
+		t.Errorf("MarkRead(999) = (%d,%v), want (3,true)", seq, changed)
+	}
+
+	// ⑤ 非成员：报错。
+	if _, _, err := convRepo.MarkRead(ctx, conv.ID, userB+1000, 1); !errors.Is(
+		err,
+		repository.ErrNotConversationMember,
+	) {
+		t.Errorf("non-member error = %v, want %v", err, repository.ErrNotConversationMember)
 	}
 }

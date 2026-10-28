@@ -28,6 +28,13 @@ type conversationChatService interface {
 		cursor service.MessageCursor,
 		limit int,
 	) ([]model.Message, bool, error)
+
+	MarkRead(
+		ctx context.Context,
+		userID uint64,
+		conversationID uint64,
+		lastReadSeq uint64,
+	) (*service.MarkReadResult, error)
 }
 
 // ConversationHandler 处理会话相关的 HTTP 请求。
@@ -291,4 +298,57 @@ func parseUintQuery(raw string) (uint64, error) {
 	}
 
 	return strconv.ParseUint(raw, 10, 64)
+}
+
+// markReadRequest 定义已读上报的请求体。
+type markReadRequest struct {
+	LastReadSeq uint64 `json:"last_read_seq" binding:"required"`
+}
+
+// MarkRead 处理 POST /api/v1/conversations/:id/read。
+func (h *ConversationHandler) MarkRead(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, 4011, "unauthorized")
+		return
+	}
+
+	conversationID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || conversationID == 0 {
+		response.Error(c, http.StatusBadRequest, 4001, "invalid conversation id")
+		return
+	}
+
+	var req markReadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, http.StatusBadRequest, 4001, "invalid request body")
+		return
+	}
+
+	result, err := h.chat.MarkRead(
+		c.Request.Context(),
+		userID,
+		conversationID,
+		req.LastReadSeq,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotConversationMember):
+			response.Error(c, http.StatusForbidden, 4031, "not a conversation member")
+
+		case errors.Is(err, service.ErrInvalidMessage):
+			response.Error(c, http.StatusBadRequest, 4001, "invalid request")
+
+		default:
+			response.Error(c, http.StatusInternalServerError, 5000, "internal server error")
+		}
+
+		return
+	}
+
+	response.Success(c, gin.H{
+		"conversation_id": conversationID,
+		"last_read_seq":   result.LastReadSeq,
+		"changed":         result.Changed,
+	})
 }

@@ -410,3 +410,52 @@ func (r *ConversationRepository) ListByUser(
 
 	return summaries, nil
 }
+
+// MarkRead 更新用户在会话里的已读位置。
+//
+// 两条不变量：
+//   - 只允许前进：GREATEST(last_read_seq, ?)，乱序请求不会让已读位置回退
+//   - 不允许超过会话最大 seq：LEAST(..., conversations.last_seq)，
+//     防止客户端伪造超大值，把未来消息静默标记为已读
+//
+// 返回实际生效的已读位置，以及本次是否有变化。
+func (r *ConversationRepository) MarkRead(
+	ctx context.Context,
+	conversationID uint64,
+	userID uint64,
+	lastReadSeq uint64,
+) (uint64, bool, error) {
+	if conversationID == 0 || userID == 0 {
+		return 0, false, ErrInvalidConversation
+	}
+
+	result := r.db.WithContext(ctx).Exec(`
+		UPDATE conversation_members
+		JOIN conversations ON conversations.id = conversation_members.conversation_id
+		SET conversation_members.last_read_seq = LEAST(
+			conversations.last_seq,
+			GREATEST(conversation_members.last_read_seq, ?)
+		)
+		WHERE conversation_members.conversation_id = ?
+		  AND conversation_members.user_id = ?
+	`, lastReadSeq, conversationID, userID)
+	if result.Error != nil {
+		return 0, false, fmt.Errorf("mark conversation read: %w", result.Error)
+	}
+
+	// 回查实际生效值，同时区分"不是成员"和"位置没变化"。
+	var member model.ConversationMember
+
+	err := r.db.WithContext(ctx).
+		Where("conversation_id = ? AND user_id = ?", conversationID, userID).
+		First(&member).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, false, ErrNotConversationMember
+		}
+
+		return 0, false, fmt.Errorf("load conversation member: %w", err)
+	}
+
+	return member.LastReadSeq, result.RowsAffected > 0, nil
+}

@@ -24,6 +24,9 @@ const (
 
 	// TypeMessageNew 服务端推送新消息。
 	TypeMessageNew = "message.new"
+
+	// TypeMessageRead 已读位置变更（推给该用户的其他设备）。
+	TypeMessageRead = "message.read"
 )
 
 // Envelope 是 WebSocket 帧的统一结构。
@@ -90,4 +93,11 @@ func NewEnvelope(messageType string, payload any) ([]byte, error) {
 		Type: messageType,
 		Data: data,
 	})
+}
+
+// MessageReadPayload 是 message.read 帧的数据体。
+type MessageReadPayload struct {
+	ConversationID uint64 `json:"conversation_id"`
+	UserID         uint64 `json:"user_id"`
+	LastReadSeq    uint64 `json:"last_read_seq"`
 }

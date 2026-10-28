@@ -74,6 +74,9 @@ func SetupRouter(deps Deps) *gin.Engine {
 			// 历史消息与补洞，seq 游标分页。
 			conversations.GET("/:id/messages", conversationHandler.Messages)
 
+			// 已读上报。
+			conversations.POST("/:id/read", conversationHandler.MarkRead)
+
 		}
 
 		// WebSocket 连接不能挂 JWTAuth 中间件：

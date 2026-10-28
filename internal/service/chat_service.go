@@ -55,6 +55,14 @@ type chatConversationRepository interface {
 		userID uint64,
 		limit int,
 	) ([]repository.ConversationSummary, error)
+
+	// MarkRead 更新已读位置，返回实际生效值和是否有变化。
+	MarkRead(
+		ctx context.Context,
+		conversationID uint64,
+		userID uint64,
+		lastReadSeq uint64,
+	) (uint64, bool, error)
 }
 
 // chatMessageRepository 定义聊天业务需要的消息操作。
@@ -374,4 +382,65 @@ func (s *ChatService) ListMessages(
 	}
 
 	return messages, len(messages) == normalizedLimit, nil
+}
+
+// MarkReadResult 是已读上报的结果。
+type MarkReadResult struct {
+	LastReadSeq uint64
+	Changed     bool
+}
+
+// MarkRead 上报已读位置，并在位置前进时广播给该用户的其他设备。
+func (s *ChatService) MarkRead(
+	ctx context.Context,
+	userID uint64,
+	conversationID uint64,
+	lastReadSeq uint64,
+) (*MarkReadResult, error) {
+	if userID == 0 || conversationID == 0 || lastReadSeq == 0 {
+		return nil, ErrInvalidMessage
+	}
+
+	effectiveSeq, changed, err := s.convRepo.MarkRead(
+		ctx,
+		conversationID,
+		userID,
+		lastReadSeq,
+	)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotConversationMember) {
+			return nil, ErrNotConversationMember
+		}
+
+		return nil, fmt.Errorf("mark read: %w", err)
+	}
+
+	// 只有位置真的前进了才广播，避免滚动到底部时重复推送。
+	if changed {
+		s.pushRead(userID, conversationID, effectiveSeq)
+	}
+
+	return &MarkReadResult{
+		LastReadSeq: effectiveSeq,
+		Changed:     changed,
+	}, nil
+}
+
+// pushRead 把已读位置推给该用户的所有设备（多端同步）。
+func (s *ChatService) pushRead(
+	userID uint64,
+	conversationID uint64,
+	lastReadSeq uint64,
+) {
+	payload, err := ws.NewEnvelope(ws.TypeMessageRead, ws.MessageReadPayload{
+		ConversationID: conversationID,
+		UserID:         userID,
+		LastReadSeq:    lastReadSeq,
+	})
+	if err != nil {
+		log.Printf("build read payload failed: %v", err)
+		return
+	}
+
+	s.pusher.SendToUser(userID, payload)
 }

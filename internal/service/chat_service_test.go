@@ -23,6 +23,10 @@ type fakeChatConvRepository struct {
 	summaries []repository.ConversationSummary
 	// 新增：成员校验结果。
 	isMember bool
+	// 新增：已读上报返回值。
+	markReadSeq     uint64
+	markReadChanged bool
+	markReadErr     error
 }
 
 func (f *fakeChatConvRepository) IsMember(
@@ -53,6 +57,19 @@ func (f *fakeChatConvRepository) CreateSingleConversation(
 	}
 
 	return f.conv, nil
+}
+
+func (f *fakeChatConvRepository) MarkRead(
+	ctx context.Context,
+	conversationID uint64,
+	userID uint64,
+	lastReadSeq uint64,
+) (uint64, bool, error) {
+	if f.markReadErr != nil {
+		return 0, false, f.markReadErr
+	}
+
+	return f.markReadSeq, f.markReadChanged, nil
 }
 
 // fakeChatMsgRepository 是消息仓储的假实现，记录调用参数。
@@ -331,5 +348,76 @@ func TestChatServiceCreateSingleConversationInvalid(t *testing.T) {
 
 	if convRepo.called != 0 {
 		t.Errorf("repository was called %d times, want 0", convRepo.called)
+	}
+}
+
+// TestChatServiceMarkReadPushesWhenChanged 测试已读前进时广播 message.read。
+func TestChatServiceMarkReadPushesWhenChanged(t *testing.T) {
+	pusher := newFakePusher()
+
+	svc := NewChatService(
+		&fakeChatConvRepository{markReadSeq: 5, markReadChanged: true},
+		&fakeChatMsgRepository{},
+		pusher,
+	)
+
+	result, err := svc.MarkRead(context.Background(), 1, 7, 5)
+	if err != nil {
+		t.Fatalf("MarkRead() unexpected error: %v", err)
+	}
+
+	if result.LastReadSeq != 5 || !result.Changed {
+		t.Errorf("result = %+v, want seq 5 changed true", result)
+	}
+
+	if got := pusher.count(); got != 1 {
+		t.Fatalf("pushed %d payloads, want 1", got)
+	}
+
+	var env ws.Envelope
+	if err := json.Unmarshal(pusher.sent[1][0], &env); err != nil {
+		t.Fatalf("unmarshal envelope failed: %v", err)
+	}
+
+	if env.Type != ws.TypeMessageRead {
+		t.Errorf("type = %q, want %q", env.Type, ws.TypeMessageRead)
+	}
+}
+
+// TestChatServiceMarkReadUnchangedDoesNotPush 测试重复上报不重复广播。
+func TestChatServiceMarkReadUnchangedDoesNotPush(t *testing.T) {
+	pusher := newFakePusher()
+
+	svc := NewChatService(
+		&fakeChatConvRepository{markReadSeq: 5, markReadChanged: false},
+		&fakeChatMsgRepository{},
+		pusher,
+	)
+
+	result, err := svc.MarkRead(context.Background(), 1, 7, 5)
+	if err != nil {
+		t.Fatalf("MarkRead() unexpected error: %v", err)
+	}
+
+	if result.Changed {
+		t.Error("Changed = true, want false")
+	}
+
+	if got := pusher.count(); got != 0 {
+		t.Errorf("pushed %d payloads, want 0", got)
+	}
+}
+
+// TestChatServiceMarkReadInvalid 测试非法参数。
+func TestChatServiceMarkReadInvalid(t *testing.T) {
+	svc := NewChatService(
+		&fakeChatConvRepository{},
+		&fakeChatMsgRepository{},
+		newFakePusher(),
+	)
+
+	_, err := svc.MarkRead(context.Background(), 1, 7, 0)
+	if !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidMessage)
 	}
 }

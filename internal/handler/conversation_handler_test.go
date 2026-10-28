@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,11 @@ type fakeConversationChatService struct {
 	lastConversationID uint64
 	// 把原来的 lastBeforeSeq / lastAfterSeq 换成游标。
 	lastCursor service.MessageCursor
+
+	// 新增：已读上报返回值。
+	markReadSeq     uint64
+	markReadChanged bool
+	lastReadUserID  uint64
 }
 
 func (f *fakeConversationChatService) ListMessages(
@@ -57,6 +63,20 @@ func (f *fakeConversationChatService) ListConversations(
 	return f.summaries, nil
 }
 
+func (f *fakeConversationChatService) MarkRead(
+	ctx context.Context,
+	userID uint64,
+	conversationID uint64,
+	lastReadSeq uint64,
+) (*service.MarkReadResult, error) {
+	f.lastReadUserID = userID
+
+	return &service.MarkReadResult{
+		LastReadSeq: f.markReadSeq,
+		Changed:     f.markReadChanged,
+	}, nil
+}
+
 // newTestConversationRouter 构造带 userID 注入的测试路由。
 // 真实环境由 JWTAuth 中间件写入 userID，这里用最简单的中间件代替。
 func newTestConversationRouter(
@@ -79,6 +99,8 @@ func newTestConversationRouter(
 	r.GET("/api/v1/conversations", h.List)
 
 	r.GET("/api/v1/conversations/:id/messages", h.Messages)
+
+	r.POST("/api/v1/conversations/:id/read", h.MarkRead)
 
 	return r
 }
@@ -363,5 +385,63 @@ func TestConversationHandlerMessagesAfterZero(t *testing.T) {
 
 	if chat.lastCursor.Direction != service.MessageDirectionAfter || chat.lastCursor.Seq != 0 {
 		t.Errorf("cursor = %+v, want after 0", chat.lastCursor)
+	}
+}
+
+// TestConversationHandlerMarkRead 测试已读上报成功。
+func TestConversationHandlerMarkRead(t *testing.T) {
+	chat := &fakeConversationChatService{markReadSeq: 3, markReadChanged: true}
+	r := newTestConversationRouter(chat, 27)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/conversations/238/read",
+		strings.NewReader(`{"last_read_seq":3}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var result struct {
+		Data struct {
+			LastReadSeq uint64 `json:"last_read_seq"`
+			Changed     bool   `json:"changed"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if result.Data.LastReadSeq != 3 || !result.Data.Changed {
+		t.Errorf("data = %+v, want last_read_seq 3 changed true", result.Data)
+	}
+
+	if chat.lastReadUserID != 27 {
+		t.Errorf("userID = %d, want 27", chat.lastReadUserID)
+	}
+}
+
+// TestConversationHandlerMarkReadInvalidBody 测试请求体缺失。
+func TestConversationHandlerMarkReadInvalidBody(t *testing.T) {
+	r := newTestConversationRouter(&fakeConversationChatService{}, 27)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/conversations/238/read",
+		strings.NewReader(`{}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }

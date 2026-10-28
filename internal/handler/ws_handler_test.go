@@ -53,6 +53,15 @@ func (f *fakeConvRepo) IsMember(
 	return true, nil
 }
 
+func (f *fakeConvRepo) MarkRead(
+	ctx context.Context,
+	conversationID uint64,
+	userID uint64,
+	lastReadSeq uint64,
+) (uint64, bool, error) {
+	return 0, false, nil
+}
+
 // fakeMsgRepo 是内存版消息仓储：实现 seq 分配和 client_msg_id 幂等，
 // 让 handler 的端到端测试不依赖 MySQL。
 type fakeMsgRepo struct {
