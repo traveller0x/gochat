@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gochat/internal/model"
 
@@ -74,4 +75,48 @@ func (r *UserRepository) GetByID(
 	}
 
 	return &user, nil
+}
+
+// Search 按用户名或昵称模糊搜索用户，排除指定用户。
+//
+// 注意：LIKE '%keyword%' 无法使用索引，会全表扫描。
+// 当前用户量小可以接受；数据量大后应改为前缀匹配 + 索引，或引入搜索引擎。
+func (r *UserRepository) Search(
+	ctx context.Context,
+	keyword string,
+	excludeUserID uint64,
+	limit int,
+) ([]model.User, error) {
+	pattern := "%" + escapeLike(keyword) + "%"
+
+	query := r.db.WithContext(ctx).
+		Select("id, username, nickname, avatar").
+		Where("username LIKE ? OR nickname LIKE ?", pattern, pattern)
+
+	if excludeUserID > 0 {
+		query = query.Where("id <> ?", excludeUserID)
+	}
+
+	var users []model.User
+
+	err := query.Order("username").Limit(limit).Find(&users).Error
+	if err != nil {
+		return nil, fmt.Errorf("search users: %w", err)
+	}
+
+	return users, nil
+}
+
+// escapeLike 转义 LIKE 通配符。
+//
+// 用户输入 "%" 或 "_" 时如果不转义，会变成"匹配任意内容"，
+// 相当于把全表数据返回给客户端。
+func escapeLike(value string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	)
+
+	return replacer.Replace(value)
 }

@@ -20,6 +20,33 @@ type mockUserRepository struct {
 	users map[string]*model.User
 }
 
+// Search 模拟按用户名或昵称模糊搜索。
+func (m *mockUserRepository) Search(
+	ctx context.Context,
+	keyword string,
+	excludeUserID uint64,
+	limit int,
+) ([]model.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var result []model.User
+
+	for _, user := range m.users {
+		if user.ID == excludeUserID {
+			continue
+		}
+
+		if strings.Contains(user.Username, keyword) ||
+			strings.Contains(user.Nickname, keyword) {
+			result = append(result, *user)
+		}
+	}
+
+	return result, nil
+}
+
 // Create 模拟创建用户，并检查用户名是否重复。
 
 func (m *mockUserRepository) Create(

@@ -21,6 +21,7 @@ var (
 	ErrInvalidNickname    = errors.New("invalid nickname")
 	ErrUsernameTaken      = errors.New("username already exists")
 	ErrInvalidCredentials = errors.New("invalid username or password")
+	ErrInvalidKeyword     = errors.New("invalid keyword")
 )
 
 type userRepository interface {
@@ -33,6 +34,13 @@ type userRepository interface {
 	// GetByID 根据用户 ID 查询用户。
 
 	GetByID(ctx context.Context, id uint64) (*model.User, error)
+	// Search 按关键词模糊搜索用户。
+	Search(
+		ctx context.Context,
+		keyword string,
+		excludeUserID uint64,
+		limit int,
+	) ([]model.User, error)
 }
 
 // UserService 负责用户相关的业务逻辑。
@@ -167,4 +175,66 @@ func (s *UserService) GetByID(
 	}
 
 	return user, nil
+}
+
+const (
+	// DefaultUserSearchLimit 是用户搜索的默认条数。
+	DefaultUserSearchLimit = 20
+
+	// MaxUserSearchLimit 是用户搜索单页最大条数。
+	MaxUserSearchLimit = 50
+
+	// MaxUserSearchKeywordRunes 是搜索关键词的最大字符数。
+	MaxUserSearchKeywordRunes = 32
+)
+
+// SearchUsers 按关键词搜索用户，结果排除当前用户。
+func (s *UserService) SearchUsers(
+	ctx context.Context,
+	keyword string,
+	excludeUserID uint64,
+	limit int,
+) ([]UserSummary, error) {
+	keyword = strings.TrimSpace(keyword)
+
+	runeCount := utf8.RuneCountInString(keyword)
+	if runeCount == 0 || runeCount > MaxUserSearchKeywordRunes {
+		return nil, ErrInvalidKeyword
+	}
+
+	users, err := s.userRepo.Search(
+		ctx,
+		keyword,
+		excludeUserID,
+		normalizeUserSearchLimit(limit),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search users: %w", err)
+	}
+
+	result := make([]UserSummary, 0, len(users))
+
+	for _, user := range users {
+		result = append(result, UserSummary{
+			ID:       user.ID,
+			Username: user.Username,
+			Nickname: user.Nickname,
+			Avatar:   user.Avatar,
+		})
+	}
+
+	return result, nil
+}
+
+// normalizeUserSearchLimit 把搜索分页大小限制在合理区间。
+func normalizeUserSearchLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultUserSearchLimit
+	}
+
+	if limit > MaxUserSearchLimit {
+		return MaxUserSearchLimit
+	}
+
+	return limit
 }

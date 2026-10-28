@@ -95,3 +95,57 @@ func (h *UserHandler) Me(c *gin.Context) {
 		},
 	})
 }
+
+// Search 处理 GET /api/v1/users/search。
+//
+// 关键词必填；结果排除当前用户，避免搜到自己。
+func (h *UserHandler) Search(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, 4011, "unauthorized")
+		return
+	}
+
+	keyword := c.Query("keyword")
+	if keyword == "" {
+		response.Error(c, http.StatusBadRequest, 4001, "keyword is required")
+		return
+	}
+
+	limit, err := parsePositiveInt(c.Query("limit"))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, 4001, "invalid limit")
+		return
+	}
+
+	users, err := h.userService.SearchUsers(
+		c.Request.Context(),
+		keyword,
+		userID,
+		limit,
+	)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidKeyword) {
+			response.Error(c, http.StatusBadRequest, 4001, "invalid keyword")
+			return
+		}
+
+		response.Error(c, http.StatusInternalServerError, 5000, "internal server error")
+		return
+	}
+
+	items := make([]userBrief, 0, len(users))
+
+	for _, user := range users {
+		items = append(items, userBrief{
+			ID:       user.ID,
+			Username: user.Username,
+			Nickname: user.Nickname,
+			Avatar:   user.Avatar,
+		})
+	}
+
+	response.Success(c, gin.H{
+		"users": items,
+	})
+}

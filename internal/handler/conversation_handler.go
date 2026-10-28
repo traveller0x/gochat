@@ -11,10 +11,17 @@ import (
 	"gochat/pkg/response"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // conversationChatService 抽象会话相关的业务能力，便于测试替换。
 type conversationChatService interface {
+	CreateSingleConversation(
+		ctx context.Context,
+		userA uint64,
+		userB uint64,
+	) (*model.Conversation, error)
+
 	ListConversations(
 		ctx context.Context,
 		userID uint64,
@@ -37,15 +44,22 @@ type conversationChatService interface {
 	) (*service.MarkReadResult, error)
 }
 
+// userReader 是会话处理器需要的用户查询能力（由 UserService 实现）。
+type userReader interface {
+	GetByID(ctx context.Context, id uint64) (*model.User, error)
+}
+
 // ConversationHandler 处理会话相关的 HTTP 请求。
 type ConversationHandler struct {
-	chat conversationChatService
+	chat  conversationChatService
+	users userReader
 }
 
 // NewConversationHandler 创建会话处理器。
-func NewConversationHandler(chat conversationChatService) *ConversationHandler {
+func NewConversationHandler(chat conversationChatService, users userReader) *ConversationHandler {
 	return &ConversationHandler{
-		chat: chat,
+		chat:  chat,
+		users: users,
 	}
 }
 
@@ -350,5 +364,74 @@ func (h *ConversationHandler) MarkRead(c *gin.Context) {
 		"conversation_id": conversationID,
 		"last_read_seq":   result.LastReadSeq,
 		"changed":         result.Changed,
+	})
+}
+
+// createConversationRequest 定义创建单聊的请求体。
+type createConversationRequest struct {
+	PeerUserID uint64 `json:"peer_user_id" binding:"required"`
+}
+
+// Create 处理 POST /api/v1/conversations。
+//
+// 语义是"创建或获取"：重复调用返回同一条会话，所以用 200 而不是 201。
+func (h *ConversationHandler) Create(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, 4011, "unauthorized")
+		return
+	}
+
+	var req createConversationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, http.StatusBadRequest, 4001, "invalid request body")
+		return
+	}
+
+	// 自己和自己建会话没有意义。
+	if req.PeerUserID == userID {
+		response.Error(c, http.StatusBadRequest, 4002, "cannot create conversation with yourself")
+		return
+	}
+
+	// 对端必须存在，否则会留下指向不存在用户的会话。
+	peer, err := h.users.GetByID(c.Request.Context(), req.PeerUserID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.Error(c, http.StatusNotFound, 4040, "user not found")
+			return
+		}
+
+		response.Error(c, http.StatusInternalServerError, 5000, "internal server error")
+		return
+	}
+
+	conv, err := h.chat.CreateSingleConversation(
+		c.Request.Context(),
+		userID,
+		req.PeerUserID,
+	)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidConversation) {
+			response.Error(c, http.StatusBadRequest, 4002, "invalid conversation")
+			return
+		}
+
+		response.Error(c, http.StatusInternalServerError, 5000, "internal server error")
+		return
+	}
+
+	response.Success(c, gin.H{
+		"conversation": conversationResponse{
+			ID:   conv.ID,
+			Type: conv.Type,
+			Name: conv.Name,
+			Peer: &userBrief{
+				ID:       peer.ID,
+				Username: peer.Username,
+				Nickname: peer.Nickname,
+				Avatar:   peer.Avatar,
+			},
+		},
 	})
 }

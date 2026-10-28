@@ -22,6 +22,16 @@ type mockAuthUserRepository struct {
 	users map[string]*model.User
 }
 
+// Search 模拟用户搜索（认证测试用不到，返回空结果）。
+func (m *mockAuthUserRepository) Search(
+	ctx context.Context,
+	keyword string,
+	excludeUserID uint64,
+	limit int,
+) ([]model.User, error) {
+	return nil, nil
+}
+
 // Create 模拟创建用户，并检查用户名是否重复。
 func (m *mockAuthUserRepository) Create(
 	ctx context.Context,

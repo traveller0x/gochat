@@ -61,14 +61,20 @@ func SetupRouter(deps Deps) *gin.Engine {
 		{
 			// 获取当前登录用户的信息。
 			users.GET("/me", userHandler.Me)
+			// 用户搜索（按用户名或昵称模糊匹配）。
+			users.GET("/search", userHandler.Search)
+
 		}
 
 		// 会话接口需要登录。
-		conversationHandler := handler.NewConversationHandler(deps.ChatService)
+		conversationHandler := handler.NewConversationHandler(deps.ChatService, deps.UserService)
 
 		conversations := api.Group("/conversations")
 		conversations.Use(middleware.JWTAuth(deps.JWTSecret))
 		{
+
+			// 创建（或获取）单聊会话。
+			conversations.POST("", conversationHandler.Create)
 			// 会话列表（含未读数、最后一条消息、单聊对方信息）。
 			conversations.GET("", conversationHandler.List)
 			// 历史消息与补洞，seq 游标分页。

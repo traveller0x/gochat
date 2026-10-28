@@ -13,6 +13,7 @@ import (
 	"gochat/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // fakeConversationChatService 是会话处理器的假业务实现。
@@ -33,6 +34,10 @@ type fakeConversationChatService struct {
 	markReadSeq     uint64
 	markReadChanged bool
 	lastReadUserID  uint64
+	// 新增：创建会话相关。
+	conv       *model.Conversation
+	createErr  error
+	lastPeerID uint64
 }
 
 func (f *fakeConversationChatService) ListMessages(
@@ -77,6 +82,20 @@ func (f *fakeConversationChatService) MarkRead(
 	}, nil
 }
 
+func (f *fakeConversationChatService) CreateSingleConversation(
+	ctx context.Context,
+	userA uint64,
+	userB uint64,
+) (*model.Conversation, error) {
+	f.lastPeerID = userB
+
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+
+	return f.conv, nil
+}
+
 // newTestConversationRouter 构造带 userID 注入的测试路由。
 // 真实环境由 JWTAuth 中间件写入 userID，这里用最简单的中间件代替。
 func newTestConversationRouter(
@@ -85,7 +104,7 @@ func newTestConversationRouter(
 ) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 
-	h := NewConversationHandler(chat)
+	h := NewConversationHandler(chat, newFakeUserReader())
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -98,11 +117,146 @@ func newTestConversationRouter(
 
 	r.GET("/api/v1/conversations", h.List)
 
+	r.POST("/api/v1/conversations", h.Create)
+
 	r.GET("/api/v1/conversations/:id/messages", h.Messages)
 
 	r.POST("/api/v1/conversations/:id/read", h.MarkRead)
 
 	return r
+}
+
+// fakeUserReader 是用户查询的假实现。
+type fakeUserReader struct {
+	users map[uint64]*model.User
+}
+
+func newFakeUserReader() *fakeUserReader {
+	return &fakeUserReader{
+		users: map[uint64]*model.User{
+			12: {ID: 12, Username: "alice", Nickname: "Alice"},
+			27: {ID: 27, Username: "bob", Nickname: "Bob"},
+		},
+	}
+}
+
+func (f *fakeUserReader) GetByID(ctx context.Context, id uint64) (*model.User, error) {
+	user, ok := f.users[id]
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	return user, nil
+}
+
+// TestConversationHandlerCreate 测试创建单聊成功并返回对方信息。
+func TestConversationHandlerCreate(t *testing.T) {
+	chat := &fakeConversationChatService{
+		conv: &model.Conversation{ID: 238, Type: model.ConversationTypeSingle},
+	}
+	r := newTestConversationRouter(chat, 12)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/conversations",
+		strings.NewReader(`{"peer_user_id":27}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var result struct {
+		Data struct {
+			Conversation conversationResponse `json:"conversation"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if result.Data.Conversation.ID != 238 {
+		t.Errorf("conversation id = %d, want 238", result.Data.Conversation.ID)
+	}
+
+	if result.Data.Conversation.Peer == nil || result.Data.Conversation.Peer.Nickname != "Bob" {
+		t.Errorf("peer = %+v, want nickname Bob", result.Data.Conversation.Peer)
+	}
+
+	if chat.lastPeerID != 27 {
+		t.Errorf("peer id = %d, want 27", chat.lastPeerID)
+	}
+}
+
+// TestConversationHandlerCreateSelf 测试不能和自己建会话。
+func TestConversationHandlerCreateSelf(t *testing.T) {
+	r := newTestConversationRouter(&fakeConversationChatService{}, 12)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/conversations",
+		strings.NewReader(`{"peer_user_id":12}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+// TestConversationHandlerCreatePeerNotFound 测试对端用户不存在。
+func TestConversationHandlerCreatePeerNotFound(t *testing.T) {
+	r := newTestConversationRouter(&fakeConversationChatService{}, 12)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/conversations",
+		strings.NewReader(`{"peer_user_id":999999}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if result["code"] != float64(4040) {
+		t.Errorf("code = %v, want 4040", result["code"])
+	}
+}
+
+// TestConversationHandlerCreateInvalidBody 测试请求体缺失 peer_user_id。
+func TestConversationHandlerCreateInvalidBody(t *testing.T) {
+	r := newTestConversationRouter(&fakeConversationChatService{}, 12)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/conversations",
+		strings.NewReader(`{}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
 }
 
 // TestConversationHandlerList 测试会话列表包含未读数、对方信息和最后一条消息。
