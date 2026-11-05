@@ -77,3 +77,15 @@ test-integration: ## 运行依赖真实 MySQL 的集成测试
 	if [ -f .env ]; then . ./.env; fi; \
 	set +a; \
 	go test -race ./tests -v -count=1
+
+.PHONY: web-install
+web-install: ## 安装前端依赖
+	cd web && npm install
+
+.PHONY: web-dev
+web-dev: ## 启动前端开发服务器（http://localhost:5173）
+	cd web && npm run dev
+
+.PHONY: web-build
+web-build: ## 构建前端到 web/dist
+	cd web && npm run build
