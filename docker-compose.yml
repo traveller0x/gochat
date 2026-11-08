@@ -26,5 +26,33 @@ services:
       retries: 10
       start_period: 30s
 
+  redis:
+    image: redis:7-alpine
+    container_name: gochat-redis
+    restart: unless-stopped
+    
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?请在.env文件中设置REDIS_PASSWORD}
+
+
+    # appendonly 让重启后在线状态还在（不是强需求，但演示更稳）
+    command: sh -c 'redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"'
+
+
+    ports:
+      # 只绑 127.0.0.1，不暴露到局域网
+      - "127.0.0.1:6379:6379"
+
+    volumes:
+      - gochat_redis_data:/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
 volumes:
   gochat_mysql_data:
+  gochat_redis_data:

@@ -61,5 +61,10 @@ func Load(path string) (*Config, error) {
 		cfg.JWT.Secret = secret
 	}
 
+	// 从环境变量读取 Redis 密码，避免把真实密码写入配置文件。
+	if password, exists := os.LookupEnv("GOCHAT_REDIS_PASSWORD"); exists {
+		cfg.Redis.Password = password
+	}
+
 	return &cfg, nil
 }
