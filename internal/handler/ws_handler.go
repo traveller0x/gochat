@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"gochat/internal/auth"
 	"gochat/internal/service"
@@ -41,18 +42,32 @@ type messageSender interface {
 	) (*service.SendMessageResult, error)
 }
 
+// presenceTracker 抽象在线状态（由 presence.Presence 实现）。
+type presenceTracker interface {
+	Online(ctx context.Context, userID uint64) error
+	Offline(ctx context.Context, userID uint64) error
+	KeepAlive(ctx context.Context, userID uint64) error
+}
+
 // WSHandler 处理 WebSocket 连接。
 type WSHandler struct {
 	hub       *ws.Hub
 	chat      messageSender
+	presence  presenceTracker
 	jwtSecret string
 }
 
 // NewWSHandler 创建 WebSocket 处理器。
-func NewWSHandler(hub *ws.Hub, chat messageSender, jwtSecret string) *WSHandler {
+func NewWSHandler(
+	hub *ws.Hub,
+	chat messageSender,
+	presence presenceTracker,
+	jwtSecret string,
+) *WSHandler {
 	return &WSHandler{
 		hub:       hub,
 		chat:      chat,
+		presence:  presence,
 		jwtSecret: jwtSecret,
 	}
 }
@@ -89,6 +104,13 @@ func (h *WSHandler) Serve(c *gin.Context) {
 	client := ws.NewClient(claims.UserID, conn, ws.DefaultSendBufferSize)
 	h.hub.Register(client)
 
+	// 4.1 标记在线（失败不影响连接，只记录日志）。
+	if h.presence != nil {
+		if err := h.presence.Online(c.Request.Context(), client.UserID()); err != nil {
+			log.Printf("presence online failed: user=%d err=%v", client.UserID(), err)
+		}
+	}
+
 	log.Printf(
 		"ws connected: user=%d online_users=%d connections=%d",
 		client.UserID(),
@@ -103,6 +125,8 @@ func (h *WSHandler) Serve(c *gin.Context) {
 	//    使用请求级 context：连接断开时会被取消，
 	//    下游的数据库操作也会随之中断，不会在断连后继续写库。
 	ctx := c.Request.Context()
+	// 6.1 心跳续期：连接存活期间定期刷新在线状态的 TTL。
+	go h.keepPresenceAlive(ctx, client.UserID())
 
 	client.ReadPump(func(payload []byte) {
 		h.handleMessage(ctx, client, payload)
@@ -113,6 +137,18 @@ func (h *WSHandler) Serve(c *gin.Context) {
 	h.hub.Unregister(client)
 	client.Close()
 
+	if h.presence != nil {
+		// 注意：请求的 ctx 此时已经被取消，清理必须用独立 ctx，
+		// 否则 Redis 调用会立刻返回 context canceled。
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+
+		if err := h.presence.Offline(cleanupCtx, client.UserID()); err != nil {
+			log.Printf("presence offline failed: user=%d err=%v", client.UserID(), err)
+		}
+
+		cancel()
+	}
+
 	log.Printf(
 		"ws disconnected: user=%d online_users=%d connections=%d",
 		client.UserID(),
@@ -121,7 +157,6 @@ func (h *WSHandler) Serve(c *gin.Context) {
 	)
 }
 
-// handleMessage 处理客户端发来的业务消息。
 // handleMessage 处理客户端发来的业务消息。
 func (h *WSHandler) handleMessage(
 	ctx context.Context,
@@ -221,4 +256,30 @@ func (h *WSHandler) sendError(client *ws.Client, code int, message string) {
 	}
 
 	_ = client.Send(payload)
+}
+
+// presenceKeepAliveInterval 是在线状态续期间隔。
+// 必须明显小于 presence.DefaultTTL（当前 90s），留出 2 倍容错。
+const presenceKeepAliveInterval = 30 * time.Second
+
+// keepPresenceAlive 在连接存活期间定期续期在线状态。
+func (h *WSHandler) keepPresenceAlive(ctx context.Context, userID uint64) {
+	if h.presence == nil {
+		return
+	}
+
+	ticker := time.NewTicker(presenceKeepAliveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-ticker.C:
+			if err := h.presence.KeepAlive(ctx, userID); err != nil {
+				log.Printf("presence keepalive failed: user=%d err=%v", userID, err)
+			}
+		}
+	}
 }

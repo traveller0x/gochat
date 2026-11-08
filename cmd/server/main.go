@@ -12,6 +12,7 @@ import (
 
 	"gochat/internal/config"
 	"gochat/internal/database"
+	"gochat/internal/presence"
 	"gochat/internal/repository"
 	"gochat/internal/router"
 	"gochat/internal/server"
@@ -79,32 +80,39 @@ func run() error {
 		}
 	}()
 
-	// 6. 初始化 Repository。
+	// 6. 初始化在线状态。
+	//    instanceID 用于区分多实例：同一用户可能同时连在不同实例上。
+	hostname, _ := os.Hostname()
+	instanceID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
+	presenceStore := presence.New(redisClient, instanceID)
+
+	// 7. 初始化 Repository。
 	userRepo := repository.NewUserRepository(db)
 	conversationRepo := repository.NewConversationRepository(db)
 	messageRepo := repository.NewMessageRepository(db)
 
-	// 7. 初始化 Service。
+	// 8. 初始化 Service。
 	userService := service.NewUserService(userRepo)
 
-	// 8. 创建连接中心。
+	// 9. 创建连接中心。
 	//    Hub 是整个进程唯一的在线连接注册表，生命周期与 HTTP 服务一致。
 	hub := ws.NewHub()
 
-	// 9. 初始化聊天服务。
+	// 10. 初始化聊天服务。
 	//    Hub 实现了 SendToUser，因此可以直接作为消息推送器注入。
 	chatService := service.NewChatService(conversationRepo, messageRepo, hub)
 
-	// 10. 初始化路由，注入业务服务、连接中心和 JWT 配置。
+	// 11. 初始化路由，注入业务服务、连接中心和 JWT 配置。
 	r := router.SetupRouter(router.Deps{
 		UserService:    userService,
 		ChatService:    chatService,
 		Hub:            hub,
+		Presence:       presenceStore,
 		JWTSecret:      cfg.JWT.Secret,
 		JWTExpireHours: cfg.JWT.ExpireHours,
 	})
 
-	// 11. 构造 HTTP 服务。
+	// 12. 构造 HTTP 服务。
 	// ReadHeaderTimeout 用于防止慢速请求头攻击：客户端只发一半请求头就不动了，
 	// 连接会一直被占用。设置上限后，超时会自动断开。
 	srv := &http.Server{
@@ -113,7 +121,7 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// 12. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
+	// 13. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -121,7 +129,7 @@ func run() error {
 	)
 	defer stop()
 
-	// 13. 启动服务并阻塞，直到出错或被信号中断。
+	// 14. 启动服务并阻塞，直到出错或被信号中断。
 	if err := server.Run(ctx, srv); err != nil {
 		return err
 	}

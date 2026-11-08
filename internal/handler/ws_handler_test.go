@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,6 +143,26 @@ func (f *fakeMsgRepo) AppendMessage(
 	return msg, f.members, false, nil
 }
 
+// fakePresence 记录在线状态调用次数（用原子变量，避免 -race 报警）。
+type fakePresence struct {
+	onlineCalls  atomic.Int32
+	offlineCalls atomic.Int32
+}
+
+func (f *fakePresence) Online(ctx context.Context, userID uint64) error {
+	f.onlineCalls.Add(1)
+	return nil
+}
+
+func (f *fakePresence) Offline(ctx context.Context, userID uint64) error {
+	f.offlineCalls.Add(1)
+	return nil
+}
+
+func (f *fakePresence) KeepAlive(ctx context.Context, userID uint64) error {
+	return nil
+}
+
 // newTestWSServer 启动只包含 WebSocket 路由的测试服务。
 func newTestWSServer(t *testing.T) (*httptest.Server, *ws.Hub) {
 	t.Helper()
@@ -158,7 +179,7 @@ func newTestWSServer(t *testing.T) (*httptest.Server, *ws.Hub) {
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
-	r.GET("/api/v1/ws", NewWSHandler(hub, chatService, wsTestSecret).Serve)
+	r.GET("/api/v1/ws", NewWSHandler(hub, chatService, &fakePresence{}, wsTestSecret).Serve)
 
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)

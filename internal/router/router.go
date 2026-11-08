@@ -3,6 +3,7 @@ package router
 import (
 	"gochat/internal/handler"
 	"gochat/internal/middleware"
+	"gochat/internal/presence"
 	"gochat/internal/service"
 	"gochat/internal/ws"
 
@@ -17,6 +18,7 @@ type Deps struct {
 	UserService    *service.UserService
 	ChatService    *service.ChatService
 	Hub            *ws.Hub
+	Presence       *presence.Presence
 	JWTSecret      string
 	JWTExpireHours int
 }
@@ -44,7 +46,7 @@ func SetupRouter(deps Deps) *gin.Engine {
 	userHandler := handler.NewUserHandler(deps.UserService)
 
 	// WebSocket 接口。
-	wsHandler := handler.NewWSHandler(deps.Hub, deps.ChatService, deps.JWTSecret)
+	wsHandler := handler.NewWSHandler(deps.Hub, deps.ChatService, deps.Presence, deps.JWTSecret)
 
 	api := r.Group("/api/v1")
 	{
