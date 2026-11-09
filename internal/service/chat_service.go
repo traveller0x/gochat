@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"gochat/internal/metrics"
 	"gochat/internal/model"
 	"gochat/internal/repository"
 	"gochat/internal/ws"
@@ -278,6 +279,8 @@ func (s *ChatService) SendMessage(
 			Duplicated: true,
 		}, nil
 	}
+	// 只有真正新落库的消息才计入发送量；重发（duplicated）不算。
+	metrics.MessagesSentTotal.Inc()
 
 	// 4. 推送给会话全部成员（包含发送者自己，实现多端同步）。
 	s.pushMessage(message, memberIDs)

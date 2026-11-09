@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Deps 汇总路由需要的所有依赖。
@@ -39,10 +40,17 @@ func SetupRouter(deps Deps) *gin.Engine {
 	// gin.Default() 自带 Logger + Recovery；这里换成我们的 RequestLogger，
 	// 避免两套日志格式并存。
 	r := gin.New()
-	r.Use(gin.Recovery(), middleware.RequestLogger(deps.Logger))
+	r.Use(
+		gin.Recovery(),
+		middleware.RequestLogger(deps.Logger),
+		middleware.Metrics(),
+	)
 
 	// 健康检查。
 	r.GET("/ping", handler.Ping)
+	// Prometheus 抓取端点。
+	// 注意：这里没有鉴权，生产环境应只允许内网/监控系统访问。
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// 身份认证接口。
 	authHandler := handler.NewAuthHandler(

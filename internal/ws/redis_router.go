@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gochat/internal/metrics"
 	"log"
 	"time"
 
@@ -79,6 +80,8 @@ func (r *RedisRouter) SendToUser(userID uint64, payload []byte) int {
 		// Pub/Sub 不持久化：这里失败只影响实时推送，
 		// 消息已在库里，客户端重连后靠 after_seq 补拉。
 		log.Printf("publish route message failed: user=%d err=%v", userID, err)
+	} else {
+		metrics.RoutePublishedTotal.Inc()
 	}
 
 	return 0
@@ -146,5 +149,8 @@ func (r *RedisRouter) deliver(raw string) {
 		return
 	}
 
-	r.local.SendToUser(message.UserID, message.Payload)
+	if delivered := r.local.SendToUser(message.UserID, message.Payload); delivered > 0 {
+		metrics.RouteDeliveredTotal.Inc()
+	}
+
 }

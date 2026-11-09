@@ -1,6 +1,9 @@
 package ws
 
-import "sync"
+import (
+	"gochat/internal/metrics"
+	"sync"
+)
 
 // Hub 维护所有在线连接。
 //
@@ -33,6 +36,9 @@ func (h *Hub) Register(c *Client) {
 	}
 
 	h.clients[c.UserID()][c] = struct{}{}
+	metrics.WSConnections.Inc()
+	metrics.WSConnectionsTotal.Inc()
+
 }
 
 // Unregister 移除一条连接，重复调用安全。
@@ -49,7 +55,14 @@ func (h *Hub) Unregister(c *Client) {
 		return
 	}
 
+	// 只有确实删掉了才减 Gauge：Unregister 是幂等的，
+	// 重复调用不能把连接数减成负数。
+	if _, existed := conns[c]; !existed {
+		return
+	}
+
 	delete(conns, c)
+	metrics.WSConnections.Dec()
 
 	// 用户的最后一条连接断开后删除外层 key。
 	// 不删除的话，map 会随着登录过的用户数量无限增长，造成内存泄漏。
