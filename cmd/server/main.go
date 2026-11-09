@@ -98,11 +98,28 @@ func run() error {
 	//    Hub 是整个进程唯一的在线连接注册表，生命周期与 HTTP 服务一致。
 	hub := ws.NewHub()
 
-	// 10. 初始化聊天服务。
-	//    Hub 实现了 SendToUser，因此可以直接作为消息推送器注入。
-	chatService := service.NewChatService(conversationRepo, messageRepo, hub)
+	// 10. 初始化跨实例路由。
+	//     本地有连接时直接投递；没有则发布到 Redis，由持有该用户连接的实例投递。
+	realtimeRouter := ws.NewRedisRouter(hub, redisClient, instanceID)
 
-	// 11. 初始化路由，注入业务服务、连接中心和 JWT 配置。
+	routerCtx, cancelRouter := context.WithCancel(context.Background())
+	defer cancelRouter()
+
+	defer func() {
+		if err := realtimeRouter.Close(); err != nil {
+			log.Printf("close redis router failed: %v", err)
+		}
+	}()
+
+	if err := realtimeRouter.Start(routerCtx); err != nil {
+		return fmt.Errorf("start redis router: %w", err)
+	}
+
+	// 11. 初始化聊天服务。
+	//    Hub 实现了 SendToUser，因此可以直接作为消息推送器注入。
+	chatService := service.NewChatService(conversationRepo, messageRepo, realtimeRouter)
+
+	// 12. 初始化路由，注入业务服务、连接中心和 JWT 配置。
 	r := router.SetupRouter(router.Deps{
 		UserService:    userService,
 		ChatService:    chatService,
@@ -112,7 +129,7 @@ func run() error {
 		JWTExpireHours: cfg.JWT.ExpireHours,
 	})
 
-	// 12. 构造 HTTP 服务。
+	// 13. 构造 HTTP 服务。
 	// ReadHeaderTimeout 用于防止慢速请求头攻击：客户端只发一半请求头就不动了，
 	// 连接会一直被占用。设置上限后，超时会自动断开。
 	srv := &http.Server{
@@ -121,7 +138,7 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// 13. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
+	// 14. 监听 Ctrl+C 和 SIGTERM，收到信号后取消 ctx。
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -129,7 +146,7 @@ func run() error {
 	)
 	defer stop()
 
-	// 14. 启动服务并阻塞，直到出错或被信号中断。
+	// 15. 启动服务并阻塞，直到出错或被信号中断。
 	if err := server.Run(ctx, srv); err != nil {
 		return err
 	}

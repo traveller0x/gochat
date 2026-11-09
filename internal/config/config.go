@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -64,6 +65,16 @@ func Load(path string) (*Config, error) {
 	// 从环境变量读取 Redis 密码，避免把真实密码写入配置文件。
 	if password, exists := os.LookupEnv("GOCHAT_REDIS_PASSWORD"); exists {
 		cfg.Redis.Password = password
+	}
+
+	// 多实例演示时用环境变量覆盖端口，避免复制配置文件。
+	if rawPort, exists := os.LookupEnv("GOCHAT_SERVER_PORT"); exists {
+		port, err := strconv.Atoi(rawPort)
+		if err != nil || port <= 0 {
+			return nil, fmt.Errorf("invalid GOCHAT_SERVER_PORT: %q", rawPort)
+		}
+
+		cfg.Server.Port = port
 	}
 
 	return &cfg, nil
