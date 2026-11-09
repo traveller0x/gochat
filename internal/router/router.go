@@ -6,6 +6,7 @@ import (
 	"gochat/internal/presence"
 	"gochat/internal/service"
 	"gochat/internal/ws"
+	"log/slog"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,6 +20,7 @@ type Deps struct {
 	ChatService    *service.ChatService
 	Hub            *ws.Hub
 	Presence       *presence.Presence
+	Logger         *slog.Logger
 	JWTSecret      string
 	JWTExpireHours int
 }
@@ -30,7 +32,14 @@ func SetupRouter(deps Deps) *gin.Engine {
 		panic("router: Deps.Hub and Deps.ChatService must not be nil")
 	}
 
-	r := gin.Default()
+	if deps.Logger == nil {
+		deps.Logger = slog.Default()
+	}
+
+	// gin.Default() 自带 Logger + Recovery；这里换成我们的 RequestLogger，
+	// 避免两套日志格式并存。
+	r := gin.New()
+	r.Use(gin.Recovery(), middleware.RequestLogger(deps.Logger))
 
 	// 健康检查。
 	r.GET("/ping", handler.Ping)

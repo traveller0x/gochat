@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 
 	"gochat/internal/config"
 	"gochat/internal/database"
+	"gochat/internal/logging"
 	"gochat/internal/presence"
 	"gochat/internal/repository"
 	"gochat/internal/router"
@@ -38,6 +40,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	// 1.1 初始化日志。
+	// 放在配置之后：配置解析失败时还没有 logger，用返回错误即可。
+	logger := logging.New(os.Getenv("GOCHAT_ENV"))
+	slog.SetDefault(logger)
 
 	// 2. 检查 JWT 配置。
 	if len(cfg.JWT.Secret) < 32 {
@@ -64,7 +70,7 @@ func run() error {
 
 	defer func() {
 		if err := sqlDB.Close(); err != nil {
-			log.Printf("close MySQL connection failed: %v", err)
+			logger.Error("close MySQL connection failed", "error", err)
 		}
 	}()
 
@@ -76,7 +82,7 @@ func run() error {
 
 	defer func() {
 		if err := redisClient.Close(); err != nil {
-			log.Printf("close Redis client failed: %v", err)
+			logger.Error("close Redis client failed", "error", err)
 		}
 	}()
 
@@ -107,7 +113,7 @@ func run() error {
 
 	defer func() {
 		if err := realtimeRouter.Close(); err != nil {
-			log.Printf("close redis router failed: %v", err)
+			logger.Error("close redis router failed", "error", err)
 		}
 	}()
 
@@ -125,6 +131,7 @@ func run() error {
 		ChatService:    chatService,
 		Hub:            hub,
 		Presence:       presenceStore,
+		Logger:         logger,
 		JWTSecret:      cfg.JWT.Secret,
 		JWTExpireHours: cfg.JWT.ExpireHours,
 	})
@@ -151,7 +158,7 @@ func run() error {
 		return err
 	}
 
-	log.Println("shutdown complete")
+	logger.Info("shutdown complete")
 
 	return nil
 }

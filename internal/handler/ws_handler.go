@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"time"
 
 	"gochat/internal/auth"
+	"gochat/internal/logging"
 	"gochat/internal/service"
 	"gochat/internal/ws"
 	"gochat/pkg/response"
@@ -96,7 +96,7 @@ func (h *WSHandler) Serve(c *gin.Context) {
 	//    升级失败时 upgrader 已经写过 HTTP 响应，这里只需要返回。
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("ws upgrade failed: %v", err)
+		logging.FromContext(c.Request.Context()).Error("ws upgrade failed", "error", err)
 		return
 	}
 
@@ -107,15 +107,14 @@ func (h *WSHandler) Serve(c *gin.Context) {
 	// 4.1 标记在线（失败不影响连接，只记录日志）。
 	if h.presence != nil {
 		if err := h.presence.Online(c.Request.Context(), client.UserID()); err != nil {
-			log.Printf("presence online failed: user=%d err=%v", client.UserID(), err)
+			logging.FromContext(c.Request.Context()).Error("presence online failed", "user_id", client.UserID(), "error", err)
 		}
 	}
 
-	log.Printf(
-		"ws connected: user=%d online_users=%d connections=%d",
-		client.UserID(),
-		h.hub.OnlineUsers(),
-		h.hub.Connections(),
+	logging.FromContext(c.Request.Context()).Info("ws connected",
+		"user_id", client.UserID(),
+		"online_users", h.hub.OnlineUsers(),
+		"connections", h.hub.Connections(),
 	)
 
 	// 5. 启动写循环：它是这条连接唯一的写者。
@@ -143,18 +142,18 @@ func (h *WSHandler) Serve(c *gin.Context) {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
 		if err := h.presence.Offline(cleanupCtx, client.UserID()); err != nil {
-			log.Printf("presence offline failed: user=%d err=%v", client.UserID(), err)
+			logging.FromContext(ctx).Error("presence offline failed", "user_id", client.UserID(), "error", err)
 		}
 
 		cancel()
 	}
 
-	log.Printf(
-		"ws disconnected: user=%d online_users=%d connections=%d",
-		client.UserID(),
-		h.hub.OnlineUsers(),
-		h.hub.Connections(),
+	logging.FromContext(ctx).Info("ws disconnected",
+		"user_id", client.UserID(),
+		"online_users", h.hub.OnlineUsers(),
+		"connections", h.hub.Connections(),
 	)
+
 }
 
 // handleMessage 处理客户端发来的业务消息。
@@ -223,7 +222,7 @@ func (h *WSHandler) handleSendMessage(
 			h.sendError(client, 4040, "conversation not found")
 
 		default:
-			log.Printf("send message failed: user=%d err=%v", client.UserID(), err)
+			logging.FromContext(ctx).Error("send message failed", "user_id", client.UserID(), "error", err)
 			h.sendError(client, 5000, "internal server error")
 		}
 
@@ -238,7 +237,7 @@ func (h *WSHandler) handleSendMessage(
 		Duplicated:     result.Duplicated,
 	})
 	if err != nil {
-		log.Printf("build ack payload failed: %v", err)
+		logging.FromContext(ctx).Error("build ack payload failed", "error", err)
 		return
 	}
 
@@ -278,7 +277,7 @@ func (h *WSHandler) keepPresenceAlive(ctx context.Context, userID uint64) {
 
 		case <-ticker.C:
 			if err := h.presence.KeepAlive(ctx, userID); err != nil {
-				log.Printf("presence keepalive failed: user=%d err=%v", userID, err)
+				logging.FromContext(ctx).Error("presence keepalive failed", "user_id", userID, "error", err)
 			}
 		}
 	}
