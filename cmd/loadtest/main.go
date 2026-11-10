@@ -1,13 +1,18 @@
-// loadtest 是 GoChat 的 WebSocket 压测客户端。
+// loadtest 是 GoChat 的 WebSocket 压测客户端（多用户多会话版）。
 //
-// 它会用同一个账号建立 N 条连接，按固定速率发送消息，
-// 统计 ack 延迟（P50/P95/P99）、错误码分布和吞吐。
+// 每个虚拟用户：
+//  1. 注册 / 登录，拿到 token
+//  2. 和 -peer 指定的账号创建一个独立会话
+//  3. 建立 1 条 WebSocket 连接，按 -rate 频率往自己的会话发消息
+//
+// 因此 N 个用户 = N 个会话 = N 条连接，扇出只有 1~2，
+// 能测出服务端真实的写入与推送能力。
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -78,52 +83,168 @@ func (s *stats) percentiles() (time.Duration, time.Duration, time.Duration) {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 
 	pick := func(p float64) time.Duration {
-		index := int(float64(len(sorted)-1) * p)
-		return sorted[index]
+		return sorted[int(float64(len(sorted)-1)*p)]
 	}
 
 	return pick(0.50), pick(0.95), pick(0.99)
 }
 
-func login(baseURL, username, password string) (string, error) {
-	body, err := json.Marshal(map[string]string{
-		"username": username,
-		"password": password,
-	})
+// ---------- HTTP 辅助 ----------
+
+type apiEnvelope struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
+}
+
+func callAPI(
+	client *http.Client,
+	method string,
+	endpoint string,
+	token string,
+	body any,
+	out any,
+) (int, error) {
+	var payload []byte
+
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return 0, err
+		}
+
+		payload = raw
+	}
+
+	req, err := http.NewRequest(method, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return 0, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var env apiEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return resp.StatusCode, err
+	}
+
+	if out != nil && len(env.Data) > 0 {
+		if err := json.Unmarshal(env.Data, out); err != nil {
+			return resp.StatusCode, err
+		}
+	}
+
+	return resp.StatusCode, nil
+}
+
+func register(client *http.Client, base, username, password string) error {
+	status, err := callAPI(
+		client,
+		http.MethodPost,
+		base+"/api/v1/auth/register",
+		"",
+		map[string]string{
+			"username": username,
+			"password": password,
+			"nickname": username,
+		},
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+
+	// 201 = 新建成功；409 = 已存在（可重跑）
+	if status != http.StatusCreated && status != http.StatusConflict {
+		return fmt.Errorf("register %s: status=%d", username, status)
+	}
+
+	return nil
+}
+
+func login(client *http.Client, base, username, password string) (string, error) {
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+
+	status, err := callAPI(
+		client,
+		http.MethodPost,
+		base+"/api/v1/auth/login",
+		"",
+		map[string]string{"username": username, "password": password},
+		&out,
+	)
 	if err != nil {
 		return "", err
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	if status != http.StatusOK || out.AccessToken == "" {
+		return "", fmt.Errorf("login %s: status=%d", username, status)
+	}
 
-	resp, err := client.Post(
-		baseURL+"/api/v1/auth/login",
-		"application/json",
-		strings.NewReader(string(body)),
+	return out.AccessToken, nil
+}
+
+func currentUserID(client *http.Client, base, token string) (uint64, error) {
+	var out struct {
+		User struct {
+			ID uint64 `json:"id"`
+		} `json:"user"`
+	}
+
+	if _, err := callAPI(client, http.MethodGet, base+"/api/v1/users/me", token, nil, &out); err != nil {
+		return 0, err
+	}
+
+	if out.User.ID == 0 {
+		return 0, fmt.Errorf("empty user id")
+	}
+
+	return out.User.ID, nil
+}
+
+func createConversation(
+	client *http.Client,
+	base string,
+	token string,
+	peerID uint64,
+) (uint64, error) {
+	var out struct {
+		Conversation struct {
+			ID uint64 `json:"id"`
+		} `json:"conversation"`
+	}
+
+	status, err := callAPI(
+		client,
+		http.MethodPost,
+		base+"/api/v1/conversations",
+		token,
+		map[string]uint64{"peer_user_id": peerID},
+		&out,
 	)
 	if err != nil {
-		return "", fmt.Errorf("login request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    struct {
-			AccessToken string `json:"access_token"`
-		} `json:"data"`
+		return 0, err
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode login response: %w", err)
+	if status != http.StatusOK || out.Conversation.ID == 0 {
+		return 0, fmt.Errorf("create conversation: status=%d", status)
 	}
 
-	if result.Code != 0 || result.Data.AccessToken == "" {
-		return "", fmt.Errorf("login failed: code=%d message=%s", result.Code, result.Message)
-	}
-
-	return result.Data.AccessToken, nil
+	return out.Conversation.ID, nil
 }
+
+// ---------- WebSocket ----------
 
 func runConn(
 	ctx context.Context,
@@ -183,8 +304,7 @@ func runConn(
 		}
 	}()
 
-	interval := time.Duration(float64(time.Second) / messagesPerSecond)
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(time.Duration(float64(time.Second) / messagesPerSecond))
 	defer ticker.Stop()
 
 	for {
@@ -226,41 +346,93 @@ func runConn(
 	}
 }
 
+// ---------- main ----------
+
 func main() {
 	var (
-		baseURL        = flag.String("base", "http://127.0.0.1:8080", "后端地址")
-		username       = flag.String("user", "alice", "登录用户名")
-		password       = flag.String("password", "Test123456", "登录密码")
-		conns          = flag.Int("conns", 100, "并发连接数")
-		ratePerConn    = flag.Float64("rate", 1, "每条连接每秒发送的消息数")
-		duration       = flag.Duration("duration", 30*time.Second, "压测持续时间")
-		conversationID = flag.Uint64("conversation", 238, "目标会话 ID")
+		baseURL     = flag.String("base", "http://127.0.0.1:8080", "后端地址")
+		password    = flag.String("password", "Test123456", "压测用户密码")
+		peer        = flag.String("peer", "bob", "每个用户聊天的对端账号")
+		users       = flag.Int("users", 50, "虚拟用户数（每个用户 1 条连接 + 1 个会话）")
+		ratePerUser = flag.Float64("rate", 2, "每个用户每秒发送的消息数")
+		duration    = flag.Duration("duration", 30*time.Second, "压测持续时间")
+		prefix      = flag.String("prefix", "lt", "压测用户名前缀")
 	)
 	flag.Parse()
 
-	if *conns <= 0 || *ratePerConn <= 0 {
-		fmt.Fprintln(os.Stderr, "conns 和 rate 必须大于 0")
+	if *users <= 0 || *ratePerUser <= 0 {
+		fmt.Fprintln(os.Stderr, "users 和 rate 必须大于 0")
 		os.Exit(2)
 	}
 
-	token, err := login(*baseURL, *username, *password)
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	// 1. 找到对端用户 ID
+	peerToken, err := login(httpClient, *baseURL, *peer, *password)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "登录失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "登录对端 %s 失败: %v\n", *peer, err)
 		os.Exit(1)
 	}
 
-	wsBase := strings.Replace(*baseURL, "http", "ws", 1)
-	wsURL := fmt.Sprintf("%s/api/v1/ws?token=%s", wsBase, url.QueryEscape(token))
+	peerID, err := currentUserID(httpClient, *baseURL, peerToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "获取对端 user id 失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("对端 %s 的 user id = %d\n", *peer, peerID)
+
+	// 2. 准备虚拟用户
+	runID := time.Now().Unix() % 100000
+
+	type clientSpec struct {
+		token          string
+		conversationID uint64
+	}
+
+	specs := make([]clientSpec, 0, *users)
+
+	for i := 0; i < *users; i++ {
+		username := fmt.Sprintf("%s%d_%03d", *prefix, runID, i)
+
+		if err := register(httpClient, *baseURL, username, *password); err != nil {
+			fmt.Fprintf(os.Stderr, "注册 %s 失败: %v\n", username, err)
+			os.Exit(1)
+		}
+
+		token, err := login(httpClient, *baseURL, username, *password)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "登录 %s 失败: %v\n", username, err)
+			os.Exit(1)
+		}
+
+		convID, err := createConversation(httpClient, *baseURL, token, peerID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "为 %s 创建会话失败: %v\n", username, err)
+			os.Exit(1)
+		}
+
+		specs = append(specs, clientSpec{token: token, conversationID: convID})
+
+		if (i+1)%10 == 0 {
+			fmt.Printf("  已准备 %d/%d 个用户\n", i+1, *users)
+		}
+	}
+
+	wsBase := "ws" + strings.TrimPrefix(*baseURL, "http")
+	_ = wsBase
+
+	// 3. 开始压测
+	totalRate := float64(*users) * (*ratePerUser)
 
 	fmt.Printf(
-		"开始压测: conns=%d rate=%.1f/s/conn total≈%.0f/s duration=%s conversation=%d\n",
-		*conns, *ratePerConn, float64(*conns)*(*ratePerConn), *duration, *conversationID,
+		"开始压测: users=%d rate=%.1f/s/user total≈%.0f/s duration=%s\n",
+		*users, *ratePerUser, totalRate, *duration,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration)
 	defer cancel()
 
-	// Ctrl+C 也能提前结束
 	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx = signalCtx
@@ -269,17 +441,23 @@ func main() {
 	start := time.Now()
 
 	var wg sync.WaitGroup
-	wg.Add(*conns)
+	wg.Add(len(specs))
 
-	for i := 0; i < *conns; i++ {
-		go func() {
+	for _, spec := range specs {
+		go func(spec clientSpec) {
 			defer wg.Done()
-			runConn(ctx, wsURL, *conversationID, *ratePerConn, st)
-		}()
+
+			wsURL := fmt.Sprintf(
+				"%s/api/v1/ws?token=%s",
+				wsBase, url.QueryEscape(spec.token),
+			)
+
+			runConn(ctx, wsURL, spec.conversationID, *ratePerUser, st)
+		}(spec)
 	}
 
-	// 每 5 秒打印一次进度
 	progressDone := make(chan struct{})
+
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -323,14 +501,5 @@ func main() {
 			p95.Round(100*time.Microsecond),
 			p99.Round(100*time.Microsecond),
 		)
-	}
-
-	if st.errors.Load() > 0 {
-		fmt.Println()
-		fmt.Println("提示: 如果错误码是 4290，说明被限流；请用更高的限流参数启动服务端，见 README。")
-	}
-
-	if st.connFail.Load() > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		fmt.Println("提示: 连接失败较多时，检查服务端 GOCHAT_MAX_CONNECTIONS 是否够大。")
 	}
 }
