@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"gochat/internal/database"
 	"gochat/internal/logging"
 	"gochat/internal/presence"
+	"gochat/internal/ratelimit"
 	"gochat/internal/repository"
 	"gochat/internal/router"
 	"gochat/internal/server"
@@ -109,6 +111,13 @@ func run() error {
 	realtimeRouter := ws.NewRedisRouter(hub, redisClient, instanceID)
 
 	routerCtx, cancelRouter := context.WithCancel(context.Background())
+	// 10.1 初始化消息限流：默认 20 条/秒、突发 40，可用环境变量覆盖（方便压测/演示）。
+	limiter := ratelimit.NewUserLimiter(
+		envInt("GOCHAT_RATE_LIMIT_PER_SECOND", ratelimit.DefaultPerSecond),
+		envInt("GOCHAT_RATE_LIMIT_BURST", ratelimit.DefaultBurst),
+	)
+	go limiter.Run(routerCtx)
+
 	defer cancelRouter()
 
 	defer func() {
@@ -131,6 +140,7 @@ func run() error {
 		ChatService:    chatService,
 		Hub:            hub,
 		Presence:       presenceStore,
+		Limiter:        limiter,
 		Logger:         logger,
 		JWTSecret:      cfg.JWT.Secret,
 		JWTExpireHours: cfg.JWT.ExpireHours,
@@ -161,4 +171,19 @@ func run() error {
 	logger.Info("shutdown complete")
 
 	return nil
+}
+
+// envInt 读取正整数环境变量，缺省或非法时返回默认值。
+func envInt(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+
+	return value
 }

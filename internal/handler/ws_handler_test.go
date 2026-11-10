@@ -179,7 +179,7 @@ func newTestWSServer(t *testing.T) (*httptest.Server, *ws.Hub) {
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
-	r.GET("/api/v1/ws", NewWSHandler(hub, chatService, &fakePresence{}, wsTestSecret).Serve)
+	r.GET("/api/v1/ws", NewWSHandler(hub, chatService, &fakePresence{}, nil, wsTestSecret).Serve)
 
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)

@@ -49,11 +49,17 @@ type presenceTracker interface {
 	KeepAlive(ctx context.Context, userID uint64) error
 }
 
+// messageLimiter 抽象消息限流（由 ratelimit.UserLimiter 实现）。
+type messageLimiter interface {
+	Allow(userID uint64) bool
+}
+
 // WSHandler 处理 WebSocket 连接。
 type WSHandler struct {
 	hub       *ws.Hub
 	chat      messageSender
 	presence  presenceTracker
+	limiter   messageLimiter
 	jwtSecret string
 }
 
@@ -62,12 +68,14 @@ func NewWSHandler(
 	hub *ws.Hub,
 	chat messageSender,
 	presence presenceTracker,
+	limiter messageLimiter,
 	jwtSecret string,
 ) *WSHandler {
 	return &WSHandler{
 		hub:       hub,
 		chat:      chat,
 		presence:  presence,
+		limiter:   limiter,
 		jwtSecret: jwtSecret,
 	}
 }
@@ -199,6 +207,11 @@ func (h *WSHandler) handleSendMessage(
 	var req ws.MessageSendPayload
 	if err := json.Unmarshal(data, &req); err != nil {
 		h.sendError(client, 4001, "invalid message payload")
+		return
+	}
+	// 限流：按用户维度，超限直接回错误帧，不写库。
+	if h.limiter != nil && !h.limiter.Allow(client.UserID()) {
+		h.sendError(client, 4290, "too many requests")
 		return
 	}
 

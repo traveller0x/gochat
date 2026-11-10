@@ -4,8 +4,10 @@ import (
 	"gochat/internal/handler"
 	"gochat/internal/middleware"
 	"gochat/internal/presence"
+	"gochat/internal/ratelimit"
 	"gochat/internal/service"
 	"gochat/internal/ws"
+
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +23,7 @@ type Deps struct {
 	ChatService    *service.ChatService
 	Hub            *ws.Hub
 	Presence       *presence.Presence
+	Limiter        *ratelimit.UserLimiter
 	Logger         *slog.Logger
 	JWTSecret      string
 	JWTExpireHours int
@@ -63,7 +66,7 @@ func SetupRouter(deps Deps) *gin.Engine {
 	userHandler := handler.NewUserHandler(deps.UserService)
 
 	// WebSocket 接口。
-	wsHandler := handler.NewWSHandler(deps.Hub, deps.ChatService, deps.Presence, deps.JWTSecret)
+	wsHandler := handler.NewWSHandler(deps.Hub, deps.ChatService, deps.Presence, deps.Limiter, deps.JWTSecret)
 
 	api := r.Group("/api/v1")
 	{
