@@ -179,7 +179,12 @@ func newTestWSServer(t *testing.T) (*httptest.Server, *ws.Hub) {
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
-	r.GET("/api/v1/ws", NewWSHandler(hub, chatService, &fakePresence{}, nil, wsTestSecret).Serve)
+	r.GET("/api/v1/ws", NewWSHandler(WSConfig{
+		Hub:       hub,
+		Chat:      chatService,
+		Presence:  &fakePresence{},
+		JWTSecret: wsTestSecret,
+	}).Serve)
 
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -583,5 +588,33 @@ func TestWSHandlerSendMessageNotMember(t *testing.T) {
 
 	if errPayload.Code != 4031 {
 		t.Errorf("error code = %d, want 4031", errPayload.Code)
+	}
+}
+
+// TestUpgraderCheckOrigin 测试 Origin 白名单。
+func TestUpgraderCheckOrigin(t *testing.T) {
+	up := newUpgrader([]string{"http://localhost:5173"})
+
+	// 不带 Origin（websocat / 移动端）→ 放行
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ws", nil)
+	if !up.CheckOrigin(req) {
+		t.Error("request without Origin should be allowed")
+	}
+
+	// 白名单内 → 放行
+	req.Header.Set("Origin", "http://localhost:5173")
+	if !up.CheckOrigin(req) {
+		t.Error("allowed origin should pass")
+	}
+
+	// 白名单外 → 拒绝
+	req.Header.Set("Origin", "http://evil.example.com")
+	if up.CheckOrigin(req) {
+		t.Error("unknown origin should be rejected")
+	}
+
+	// 未配置白名单 → 全放行（开发模式）
+	if !newUpgrader(nil).CheckOrigin(req) {
+		t.Error("empty whitelist should allow all")
 	}
 }

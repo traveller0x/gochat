@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/time/rate"
 )
 
 // DefaultSendBufferSize 是单个连接发送缓冲区的默认容量。
@@ -13,6 +14,13 @@ import (
 // 缓冲区太小，正常网络抖动就会被误杀；太大，慢客户端会占用过多内存。
 // 256 条消息在 IM 场景下足够吸收一次短暂卡顿。
 const DefaultSendBufferSize = 256
+const (
+	// MaxFramesPerSecond 单连接每秒最多处理的帧数，防止垃圾帧刷 CPU。
+	MaxFramesPerSecond = 100
+
+	// MaxFrameBurst 单连接允许的瞬时突发帧数。
+	MaxFrameBurst = 200
+)
 
 var (
 	// ErrClientClosed 表示连接已经关闭。
@@ -39,6 +47,9 @@ type Client struct {
 	// done 在连接关闭时被关闭，用于通知所有 goroutine 退出。
 	done chan struct{}
 
+	// frames 限制单连接的入站帧速率，超限直接断开。
+	frames *rate.Limiter
+
 	// once 保证 done 只被关闭一次，重复 Close 是安全的。
 	once sync.Once
 }
@@ -55,6 +66,7 @@ func NewClient(userID uint64, conn Conn, bufferSize int) *Client {
 		conn:   conn,
 		send:   make(chan []byte, bufferSize),
 		done:   make(chan struct{}),
+		frames: rate.NewLimiter(rate.Limit(MaxFramesPerSecond), MaxFrameBurst),
 	}
 }
 
@@ -138,6 +150,11 @@ func (c *Client) ReadPump(onMessage func(payload []byte)) {
 	})
 
 	for {
+		// 帧率超限直接退出：ReadPump 的 defer 会关闭 Client，
+		// handler 随后 Unregister，连接被清理。
+		if !c.frames.Allow() {
+			return
+		}
 		_, payload, err := c.conn.ReadMessage()
 		if err != nil {
 			// 连接断开、读超时、消息超限都会走到这里。

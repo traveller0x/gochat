@@ -370,3 +370,33 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 	waitDone(t, readerDone, "ReadPump leaked")
 }
+
+// TestReadPumpStopsOnFrameFlood 测试垃圾帧洪泛会断开连接。
+func TestReadPumpStopsOnFrameFlood(t *testing.T) {
+	conn := newFakeConn()
+	client := NewClient(1, conn, 4)
+
+	done := make(chan struct{})
+
+	go func() {
+		client.ReadPump(nil)
+		close(done)
+	}()
+
+	// 持续投喂空帧，直到 ReadPump 退出。
+	go func() {
+		for i := 0; i < MaxFrameBurst+50; i++ {
+			select {
+			case conn.reads <- fakeRead{payload: []byte(`{}`)}:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReadPump should stop after frame flood")
+	}
+}

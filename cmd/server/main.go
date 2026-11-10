@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,13 +113,12 @@ func run() error {
 
 	routerCtx, cancelRouter := context.WithCancel(context.Background())
 	// 10.1 初始化消息限流：默认 20 条/秒、突发 40，可用环境变量覆盖（方便压测/演示）。
+	defer cancelRouter()
 	limiter := ratelimit.NewUserLimiter(
 		envInt("GOCHAT_RATE_LIMIT_PER_SECOND", ratelimit.DefaultPerSecond),
 		envInt("GOCHAT_RATE_LIMIT_BURST", ratelimit.DefaultBurst),
 	)
 	go limiter.Run(routerCtx)
-
-	defer cancelRouter()
 
 	defer func() {
 		if err := realtimeRouter.Close(); err != nil {
@@ -129,6 +129,10 @@ func run() error {
 	if err := realtimeRouter.Start(routerCtx); err != nil {
 		return fmt.Errorf("start redis router: %w", err)
 	}
+	// 10.2 连接上限与 WS 来源白名单。
+	// 注意：envInt 会拒绝 0，GOCHAT_MAX_CONNECTIONS=0 会回退为 10000，并不表示“不限制”。
+	maxConnections := envInt("GOCHAT_MAX_CONNECTIONS", 10_000)
+	allowedOrigins := envList("GOCHAT_ALLOWED_ORIGINS")
 
 	// 11. 初始化聊天服务。
 	//    Hub 实现了 SendToUser，因此可以直接作为消息推送器注入。
@@ -144,6 +148,8 @@ func run() error {
 		Logger:         logger,
 		JWTSecret:      cfg.JWT.Secret,
 		JWTExpireHours: cfg.JWT.ExpireHours,
+		MaxConnections: maxConnections,
+		AllowedOrigins: allowedOrigins,
 	})
 
 	// 13. 构造 HTTP 服务。
@@ -174,6 +180,7 @@ func run() error {
 }
 
 // envInt 读取正整数环境变量，缺省或非法时返回默认值。
+// 注意：0 也会被当作非法值回退默认值，因此不能用 0 表示“不限制”。
 func envInt(key string, fallback int) int {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -186,4 +193,23 @@ func envInt(key string, fallback int) int {
 	}
 
 	return value
+}
+
+// envList 读取逗号分隔的环境变量。
+func envList(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			result = append(result, value)
+		}
+	}
+
+	return result
 }

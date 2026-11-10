@@ -26,6 +26,8 @@ type Deps struct {
 	Limiter        *ratelimit.UserLimiter
 	Logger         *slog.Logger
 	JWTSecret      string
+	MaxConnections int
+	AllowedOrigins []string
 	JWTExpireHours int
 }
 
@@ -66,7 +68,15 @@ func SetupRouter(deps Deps) *gin.Engine {
 	userHandler := handler.NewUserHandler(deps.UserService)
 
 	// WebSocket 接口。
-	wsHandler := handler.NewWSHandler(deps.Hub, deps.ChatService, deps.Presence, deps.Limiter, deps.JWTSecret)
+	wsHandler := handler.NewWSHandler(handler.WSConfig{
+		Hub:            deps.Hub,
+		Chat:           deps.ChatService,
+		Presence:       deps.Presence,
+		Limiter:        deps.Limiter,
+		JWTSecret:      deps.JWTSecret,
+		MaxConnections: deps.MaxConnections,
+		AllowedOrigins: deps.AllowedOrigins,
+	})
 
 	api := r.Group("/api/v1")
 	{

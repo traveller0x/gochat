@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"gochat/internal/auth"
@@ -17,17 +18,34 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// upgrader 负责把 HTTP 请求升级为 WebSocket 连接。
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  4 << 10,
-	WriteBufferSize: 4 << 10,
+// newUpgrader 构造 WebSocket 升级器。
+//
+// allowedOrigins 为空表示不校验（开发环境）；
+// 非浏览器客户端（websocat、移动端）不带 Origin 头，直接放行。
+func newUpgrader(allowedOrigins []string) websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  4 << 10,
+		WriteBufferSize: 4 << 10,
 
-	// CheckOrigin 防止跨站 WebSocket 劫持（CSWSH）。
-	// 开发阶段为了方便本地调试允许所有来源；
-	// 上线前必须改为校验白名单域名。
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+
+			if len(allowedOrigins) == 0 {
+				return true
+			}
+
+			for _, allowed := range allowedOrigins {
+				if allowed == "*" || strings.EqualFold(origin, allowed) {
+					return true
+				}
+			}
+
+			return false
+		},
+	}
 }
 
 // messageSender 抽象发送消息的业务能力，便于测试替换。
@@ -54,29 +72,38 @@ type messageLimiter interface {
 	Allow(userID uint64) bool
 }
 
+// WSConfig 汇总 WebSocket 处理器的依赖。
+type WSConfig struct {
+	Hub            *ws.Hub
+	Chat           messageSender
+	Presence       presenceTracker
+	Limiter        messageLimiter
+	JWTSecret      string
+	MaxConnections int
+	AllowedOrigins []string
+}
+
 // WSHandler 处理 WebSocket 连接。
 type WSHandler struct {
-	hub       *ws.Hub
-	chat      messageSender
-	presence  presenceTracker
-	limiter   messageLimiter
-	jwtSecret string
+	hub            *ws.Hub
+	chat           messageSender
+	presence       presenceTracker
+	limiter        messageLimiter
+	jwtSecret      string
+	maxConnections int
+	upgrader       websocket.Upgrader
 }
 
 // NewWSHandler 创建 WebSocket 处理器。
-func NewWSHandler(
-	hub *ws.Hub,
-	chat messageSender,
-	presence presenceTracker,
-	limiter messageLimiter,
-	jwtSecret string,
-) *WSHandler {
+func NewWSHandler(cfg WSConfig) *WSHandler {
 	return &WSHandler{
-		hub:       hub,
-		chat:      chat,
-		presence:  presence,
-		limiter:   limiter,
-		jwtSecret: jwtSecret,
+		hub:            cfg.Hub,
+		chat:           cfg.Chat,
+		presence:       cfg.Presence,
+		limiter:        cfg.Limiter,
+		jwtSecret:      cfg.JWTSecret,
+		maxConnections: cfg.MaxConnections,
+		upgrader:       newUpgrader(cfg.AllowedOrigins),
 	}
 }
 
@@ -100,9 +127,15 @@ func (h *WSHandler) Serve(c *gin.Context) {
 		return
 	}
 
+	// 连接数上限：软限制，先检查再注册（极端并发下可能略微超出）。
+	if h.maxConnections > 0 && h.hub.Connections() >= h.maxConnections {
+		response.Error(c, http.StatusServiceUnavailable, 5031, "too many connections")
+		return
+	}
+
 	// 3. 升级为 WebSocket 连接。
 	//    升级失败时 upgrader 已经写过 HTTP 响应，这里只需要返回。
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		logging.FromContext(c.Request.Context()).Error("ws upgrade failed", "error", err)
 		return
