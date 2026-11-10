@@ -161,6 +161,14 @@ func (f *fakePusher) count() int {
 	return total
 }
 
+// payloads 返回某个用户收到的推送（加锁，避免与异步推送竞争）。
+func (f *fakePusher) payloads(userID uint64) [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.sent[userID]
+}
+
 // newTestChatService 创建使用假依赖的 ChatService。
 func newTestChatService(
 	msgRepo *fakeChatMsgRepository,
@@ -210,12 +218,15 @@ func TestChatServiceSendMessageSuccess(t *testing.T) {
 		t.Fatalf("unexpected message: %+v", result.Message)
 	}
 
-	if got := pusher.count(); got != 2 {
-		t.Fatalf("pushed %d payloads, want 2", got)
-	}
+	waitForPushes(t, pusher, 2)
 
 	// 解析推送帧，确认协议正确。
-	payload := pusher.sent[2][0]
+	payloads := pusher.payloads(2)
+	if len(payloads) == 0 {
+		t.Fatal("no payload pushed to user 2")
+	}
+
+	payload := payloads[0]
 
 	var env ws.Envelope
 	if err := json.Unmarshal(payload, &env); err != nil {
@@ -420,4 +431,21 @@ func TestChatServiceMarkReadInvalid(t *testing.T) {
 	if !errors.Is(err, ErrInvalidMessage) {
 		t.Fatalf("error = %v, want %v", err, ErrInvalidMessage)
 	}
+}
+
+// waitForPushes 轮询等待推送数量达到预期（推送是异步的）。
+func waitForPushes(t *testing.T, pusher *fakePusher, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+
+	for time.Now().Before(deadline) {
+		if pusher.count() == want {
+			return
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("pushed %d payloads, want %d", pusher.count(), want)
 }

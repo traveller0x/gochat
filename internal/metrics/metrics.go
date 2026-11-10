@@ -50,4 +50,10 @@ var (
 		Help:    "HTTP 请求耗时分布（秒）。",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "path"})
+
+	// PushDroppedTotal 因推送队列满而丢弃的推送数。
+	PushDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "gochat_push_dropped_total",
+		Help: "推送队列满导致丢弃的推送数。",
+	})
 )

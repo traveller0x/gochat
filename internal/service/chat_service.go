@@ -7,6 +7,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"gochat/internal/metrics"
@@ -102,9 +103,11 @@ type messagePusher interface {
 
 // ChatService 负责聊天相关的业务逻辑。
 type ChatService struct {
-	convRepo chatConversationRepository
-	msgRepo  chatMessageRepository
-	pusher   messagePusher
+	convRepo  chatConversationRepository
+	msgRepo   chatMessageRepository
+	pusher    messagePusher
+	pushQueue chan pushJob
+	pushOnce  sync.Once
 }
 
 // NewChatService 创建聊天业务服务。
@@ -114,9 +117,10 @@ func NewChatService(
 	pusher messagePusher,
 ) *ChatService {
 	return &ChatService{
-		convRepo: convRepo,
-		msgRepo:  msgRepo,
-		pusher:   pusher,
+		convRepo:  convRepo,
+		msgRepo:   msgRepo,
+		pusher:    pusher,
+		pushQueue: make(chan pushJob, pushQueueSize),
 	}
 }
 
@@ -221,8 +225,8 @@ func (s *ChatService) CreateSingleConversation(
 
 // SendMessage 发送一条文本消息。
 //
-// 流程：参数校验 → 事务落库（含 seq 分配和幂等）→ 推送给全部成员。
-// 推送失败不影响消息一致性：消息已在库里，客户端可通过 seq 补拉。
+// 流程：参数校验 → 事务落库（含 seq 分配和幂等）→ 入队推送 → 返回。
+// 推送是异步的：ack 只代表"已持久化"，实时推送失败/延迟由客户端补拉兜底。
 func (s *ChatService) SendMessage(
 	ctx context.Context,
 	senderID uint64,
@@ -309,9 +313,11 @@ func (s *ChatService) pushMessage(message *model.Message, memberIDs []uint64) {
 		return
 	}
 
+	// 只入队，不等推送完成：ack 延迟不再受扇出规模影响。
 	for _, userID := range memberIDs {
-		s.pusher.SendToUser(userID, payload)
+		s.enqueuePush(userID, payload)
 	}
+
 }
 
 // MessageDirection 表示消息拉取方向。
