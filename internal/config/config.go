@@ -67,6 +67,27 @@ func Load(path string) (*Config, error) {
 		cfg.Redis.Password = password
 	}
 
+	// 容器部署时用服务名替代 127.0.0.1。
+	if host, exists := os.LookupEnv("GOCHAT_MYSQL_HOST"); exists {
+		cfg.MySQL.Host = host
+	}
+
+	if raw, exists := os.LookupEnv("GOCHAT_MYSQL_PORT"); exists {
+		if port, err := strconv.Atoi(raw); err == nil && port > 0 {
+			cfg.MySQL.Port = port
+		}
+	}
+
+	if host, exists := os.LookupEnv("GOCHAT_REDIS_HOST"); exists {
+		cfg.Redis.Host = host
+	}
+
+	if raw, exists := os.LookupEnv("GOCHAT_REDIS_PORT"); exists {
+		if port, err := strconv.Atoi(raw); err == nil && port > 0 {
+			cfg.Redis.Port = port
+		}
+	}
+
 	// 多实例演示时用环境变量覆盖端口，避免复制配置文件。
 	if rawPort, exists := os.LookupEnv("GOCHAT_SERVER_PORT"); exists {
 		port, err := strconv.Atoi(rawPort)

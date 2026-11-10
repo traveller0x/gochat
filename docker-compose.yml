@@ -30,17 +30,13 @@ services:
     image: redis:7-alpine
     container_name: gochat-redis
     restart: unless-stopped
-    
+
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?请在.env文件中设置REDIS_PASSWORD}
 
-
-    # appendonly 让重启后在线状态还在（不是强需求，但演示更稳）
     command: sh -c 'redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"'
 
-
     ports:
-      # 只绑 127.0.0.1，不暴露到局域网
       - "127.0.0.1:6379:6379"
 
     volumes:
@@ -48,10 +44,51 @@ services:
 
     healthcheck:
       test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
-
       interval: 10s
       timeout: 3s
       retries: 10
+
+  migrate:
+    image: migrate/migrate:v4.17.0
+    container_name: gochat-migrate
+    volumes:
+      - ./migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database"
+      - "mysql://root:${MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/gochat?charset=utf8mb4&multiStatements=true"
+      - "up"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gochat-app
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      # 容器内用服务名，覆盖 config.yaml 里的 127.0.0.1
+      GOCHAT_MYSQL_HOST: mysql
+      GOCHAT_MYSQL_PORT: "3306"
+      GOCHAT_REDIS_HOST: redis
+      GOCHAT_REDIS_PORT: "6379"
+
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   gochat_mysql_data:
