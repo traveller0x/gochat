@@ -89,6 +89,19 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: gochat-web
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8088:80"
+
+    depends_on:
+      - app
+
 
 volumes:
   gochat_mysql_data:
